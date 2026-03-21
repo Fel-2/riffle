@@ -28,8 +28,10 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     // Dir (truncated)
     let dir = tab.current_dir.to_string_lossy().into_owned();
     let max_path = area.width.saturating_sub(40) as usize;
-    let dir_str = if max_path > 3 && dir.len() > max_path {
-        format!("~{}", &dir[dir.len() - max_path..])
+    let dir_str = if max_path > 3 && dir.chars().count() > max_path {
+        let chars: Vec<char> = dir.chars().collect();
+        let tail: String = chars[chars.len().saturating_sub(max_path)..].iter().collect();
+        format!("~{}", tail)
     } else {
         dir
     };

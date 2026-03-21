@@ -93,10 +93,12 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState, tab_idx: usize) {
 
     // Calculate spacing
     let left_width = area.width.saturating_sub(right.len() as u16 + 1);
-    let left = if header.len() > left_width as usize {
-        header[..left_width as usize].to_string()
+    let left_w = left_width as usize;
+    let left = if header.chars().count() > left_w {
+        header.chars().take(left_w).collect()
     } else {
-        format!("{:<width$}", header, width = left_width as usize)
+        let pad = left_w.saturating_sub(header.chars().count());
+        format!("{}{}", header, " ".repeat(pad))
     };
 
     let line = Line::from(vec![
@@ -188,12 +190,15 @@ fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) 
                 name.clone()
             };
 
-            let display_name = if max_name > 3 && base_name.len() > max_name {
-                format!("{}~", &base_name[..max_name.saturating_sub(1)])
+            let display_name = if max_name > 3 && base_name.chars().count() > max_name {
+                let truncated: String = base_name.chars().take(max_name.saturating_sub(1)).collect();
+                format!("{}~", truncated)
             } else {
                 base_name
             };
-            let padded_name = format!("{:<width$}", display_name, width = max_name.max(1));
+            let char_count = display_name.chars().count();
+            let pad = max_name.max(1).saturating_sub(char_count);
+            let padded_name = format!("{}{}", display_name, " ".repeat(pad));
 
             let git_str = format!("{} ", if git_ch == ' ' { ' ' } else { git_ch });
             let git_style = git_char_style(git_ch).bg(bg);
