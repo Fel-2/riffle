@@ -1,5 +1,6 @@
 use std::collections::{HashSet, HashMap};
 use std::path::PathBuf;
+use crate::config::Config;
 use crate::filesystem::FileEntry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,25 +98,48 @@ pub struct AppState {
     pub preview_rect: Option<(u16, u16, u16, u16)>, // x,y,w,h (inner area)
     pub last_kitty_image: Option<PathBuf>,
     pub preview_image_pending: Option<(PathBuf, std::time::Instant)>,
+    pub config: Config,
 }
 
 impl AppState {
     pub fn new() -> Self {
+        let cfg = crate::config::load();
+
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-        let mut bookmarks = vec![("Home".into(), home.clone())];
+
+        // Config bookmarks first, then auto-detected ones
+        let mut bookmarks: Vec<(String, PathBuf)> = cfg.bookmarks.iter()
+            .map(|b| (b.name.clone(), PathBuf::from(&b.path)))
+            .collect();
+        bookmarks.push(("Home".into(), home.clone()));
         if let Some(p) = dirs::download_dir() { bookmarks.push(("Downloads".into(), p)); }
         if let Some(p) = dirs::document_dir() { bookmarks.push(("Documents".into(), p)); }
         if let Some(p) = dirs::picture_dir()  { bookmarks.push(("Pictures".into(), p)); }
         if let Some(p) = dirs::audio_dir()    { bookmarks.push(("Music".into(), p)); }
         if let Some(p) = dirs::video_dir()    { bookmarks.push(("Videos".into(), p)); }
 
+        // Apply sort from config to the initial tab
+        let sort_by = match cfg.ui.sort_by.as_str() {
+            "size" => SortBy::Size,
+            "date" => SortBy::Date,
+            "type" => SortBy::Type,
+            _      => SortBy::Name,
+        };
+        let mut initial_tab = TabState::new(home);
+        initial_tab.sort_by = sort_by;
+        initial_tab.sort_ascending = cfg.ui.sort_ascending;
+
+        let show_hidden     = cfg.ui.show_hidden;
+        let preview_enabled = cfg.ui.preview_enabled;
+        let sidebar_width   = cfg.ui.sidebar_width;
+
         Self {
-            tabs: vec![TabState::new(home)],
+            tabs: vec![initial_tab],
             active_tab: 0,
             right_tab: 0,
             dual_pane: false,
             right_focused: false,
-            show_hidden: false,
+            show_hidden,
             clipboard: None,
             input_mode: InputMode::Normal,
             goto_buf: String::new(),
@@ -123,12 +147,13 @@ impl AppState {
             bookmarks,
             status: None,
             show_help: false,
-            sidebar_width: 20,
-            preview_enabled: false,
+            sidebar_width,
+            preview_enabled,
             preview_content: PreviewContent::None,
             preview_rect: None,
             last_kitty_image: None,
             preview_image_pending: None,
+            config: cfg,
         }
     }
 

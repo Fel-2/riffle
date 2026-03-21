@@ -93,7 +93,7 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
                         break;
                     }
                     LoopAction::OpenEditor(path) => {
-                        let _ = commands::open_in_editor(&path);
+                        let _ = commands::open_in_editor(&path, &state.config);
                         terminal.clear()?;
                         let tab_idx = focused_tab_idx(&state);
                         refresh_tab(&mut state.tabs[tab_idx], state.show_hidden);
@@ -432,7 +432,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopActi
                 if is_dir {
                     navigate_to(state, path);
                 } else {
-                    let _ = commands::open_file(&path);
+                    let _ = commands::open_file(&path, &state.config);
                 }
             }
         }
@@ -725,7 +725,7 @@ fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopActi
         // Open terminal
         KeyCode::Char('T') => {
             let dir = state.focused_tab().current_dir.clone();
-            let _ = commands::open_terminal(&dir);
+            let _ = commands::open_terminal(&dir, &state.config);
         }
 
         // Help

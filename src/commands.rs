@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use crate::config::Config;
 
 /// Known text extensions that should be opened in an editor
 fn is_text_extension(ext: &str) -> bool {
@@ -11,16 +12,25 @@ fn is_text_extension(ext: &str) -> bool {
     )
 }
 
-pub fn open_file(path: &PathBuf) -> Result<(), String> {
+pub fn open_file(path: &PathBuf, config: &Config) -> Result<(), String> {
     let ext = path.extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
 
     if is_text_extension(&ext) {
-        return open_in_editor(path);
+        return open_in_editor(path, config);
     }
 
-    // Images, video, audio and everything else: xdg-open
+    // Check config for a specific opener for this extension
+    if let Some(app) = config.opener_for_ext(&ext) {
+        Command::new(&app)
+            .arg(path)
+            .spawn()
+            .map_err(|e| format!("Failed to launch '{}': {}", app, e))?;
+        return Ok(());
+    }
+
+    // Fallback: xdg-open
     Command::new("xdg-open")
         .arg(path)
         .spawn()
@@ -28,10 +38,8 @@ pub fn open_file(path: &PathBuf) -> Result<(), String> {
     Ok(())
 }
 
-pub fn open_in_editor(path: &Path) -> Result<(), String> {
-    let editor = std::env::var("EDITOR")
-        .or_else(|_| std::env::var("VISUAL"))
-        .unwrap_or_else(|_| "nvim".to_string());
+pub fn open_in_editor(path: &Path, config: &Config) -> Result<(), String> {
+    let editor = config.editor();
 
     // Fully restore the terminal before handing it to the editor.
     // DisableMouseCapture is critical — without it, mouse escape sequences
@@ -213,7 +221,14 @@ pub fn extract_archive(path: &Path) -> Result<(), String> {
     }
 }
 
-pub fn open_terminal(path: &PathBuf) -> Result<(), String> {
+pub fn open_terminal(path: &PathBuf, config: &Config) -> Result<(), String> {
+    // If user configured a specific terminal, try it first
+    if !config.apps.terminal.is_empty() {
+        if Command::new(&config.apps.terminal).current_dir(path).spawn().is_ok() {
+            return Ok(());
+        }
+    }
+
     #[cfg(target_os = "linux")]
     {
         let configs = [
