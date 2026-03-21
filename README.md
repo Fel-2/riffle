@@ -86,6 +86,56 @@ cargo build --release
 | `?` / `F1` | Help |
 | `q` | Quit |
 
+## Configuration
+
+riffle generates a commented config file on first run at:
+
+```
+~/.config/riffle/config.toml
+```
+
+### Apps
+
+```toml
+[apps]
+# Text editor for 'e' and text files. Falls back to $EDITOR, then nvim.
+editor = ""
+
+# Terminal emulator for 'T'. Empty = auto-detect.
+terminal = ""
+
+# Per-type openers. Empty = xdg-open.
+image   = ""   # e.g. "imv", "feh"
+video   = ""   # e.g. "mpv", "vlc"
+audio   = ""   # e.g. "mpv", "cmus"
+pdf     = ""   # e.g. "zathura", "evince"
+```
+
+### UI
+
+```toml
+[ui]
+show_hidden     = false   # show dot-files on startup
+sort_by         = "name"  # "name", "size", "date", "type"
+sort_ascending  = true
+preview_enabled = false   # open with preview pane visible
+sidebar_width   = 20      # bookmark sidebar width in columns
+```
+
+### Bookmarks
+
+Custom bookmarks appear at the top of the sidebar above the auto-detected ones.
+
+```toml
+[[bookmarks]]
+name = "Projects"
+path = "/home/user/projects"
+
+[[bookmarks]]
+name = "NAS"
+path = "/mnt/nas"
+```
+
 ## Memory Usage
 
 ~4 MB RSS (release build). No GPU, no OpenGL, no Wayland compositor overhead.
