@@ -31,7 +31,7 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
 
         terminal.draw(|f| ui::render(f, &mut state))?;
 
-        // Kitty image: 150ms debounce then send protocol directly to stdout
+        // Image preview: 150ms debounce then send via kitty protocol or chafa fallback
         if state.preview_enabled {
             if let PreviewContent::Image(ref path) = state.preview_content.clone() {
                 let path = path.clone();
@@ -46,23 +46,44 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
                     };
                     if ready {
                         state.preview_image_pending = None;
-                        ui::preview::clear_kitty();
-                        if let Some((x, y, w, h)) = state.preview_rect {
-                            let _ = ui::preview::send_kitty_image(&path, x, y, w, h);
+                        if ui::preview::is_kitty() {
+                            ui::preview::clear_kitty();
+                            if let Some((x, y, w, h)) = state.preview_rect {
+                                let _ = ui::preview::send_kitty_image(&path, x, y, w, h);
+                            }
+                        } else if ui::preview::is_chafa_available() {
+                            if let Some((_, _, w, h)) = state.preview_rect {
+                                state.cached_chafa_output =
+                                    ui::preview::render_chafa_image(&path, w, h);
+                            }
                         }
-                        state.last_kitty_image = Some(path);
+                        state.last_kitty_image = Some(path.clone());
+                    }
+                }
+                // Chafa output must be re-written every frame (ratatui overwrites it)
+                if !ui::preview::is_kitty() {
+                    if let (Some(ref output), Some((x, y, _, h))) =
+                        (state.cached_chafa_output.clone(), state.preview_rect)
+                    {
+                        ui::preview::write_chafa_output(output, x, y, h);
                     }
                 }
             } else {
                 if state.last_kitty_image.is_some() {
-                    ui::preview::clear_kitty();
+                    if ui::preview::is_kitty() {
+                        ui::preview::clear_kitty();
+                    }
                     state.last_kitty_image = None;
                 }
+                state.cached_chafa_output = None;
                 state.preview_image_pending = None;
             }
         } else if state.last_kitty_image.is_some() {
-            ui::preview::clear_kitty();
+            if ui::preview::is_kitty() {
+                ui::preview::clear_kitty();
+            }
             state.last_kitty_image = None;
+            state.cached_chafa_output = None;
             state.preview_image_pending = None;
         }
 

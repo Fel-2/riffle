@@ -247,3 +247,48 @@ pub fn clear_kitty() {
     let _ = write!(stdout, "\x1b_Ga=d,d=A\x1b\\");
     let _ = stdout.flush();
 }
+
+pub fn is_chafa_available() -> bool {
+    static CHAFA: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *CHAFA.get_or_init(|| {
+        std::process::Command::new("chafa")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
+
+/// Run chafa on `path` and return the ANSI output string, or None on failure.
+pub fn render_chafa_image(path: &Path, w: u16, h: u16) -> Option<String> {
+    if w == 0 || h == 0 { return None; }
+    let out = std::process::Command::new("chafa")
+        .args([
+            "--size", &format!("{}x{}", w, h),
+            "--animate", "off",
+            path.to_str()?,
+        ])
+        .output()
+        .ok()?;
+    if out.status.success() && !out.stdout.is_empty() {
+        Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        None
+    }
+}
+
+/// Write a cached chafa ANSI output string to the terminal at (x, y).
+/// Must be called after terminal.draw() since ratatui overwrites it each frame.
+pub fn write_chafa_output(output: &str, x: u16, y: u16, h: u16) {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    let _ = write!(stdout, "\x1b[s");
+    for (row, line) in output.lines().enumerate() {
+        if row as u16 >= h { break; }
+        let _ = write!(stdout, "\x1b[{};{}H{}", y + 1 + row as u16, x + 1, line);
+    }
+    let _ = write!(stdout, "\x1b[u");
+    let _ = stdout.flush();
+}

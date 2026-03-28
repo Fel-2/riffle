@@ -98,6 +98,7 @@ pub struct AppState {
     pub preview_rect: Option<(u16, u16, u16, u16)>, // x,y,w,h (inner area)
     pub last_kitty_image: Option<PathBuf>,
     pub preview_image_pending: Option<(PathBuf, std::time::Instant)>,
+    pub cached_chafa_output: Option<String>,
     pub config: Config,
 }
 
@@ -153,6 +154,7 @@ impl AppState {
             preview_rect: None,
             last_kitty_image: None,
             preview_image_pending: None,
+            cached_chafa_output: None,
             config: cfg,
         }
     }
