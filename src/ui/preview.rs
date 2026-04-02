@@ -279,6 +279,20 @@ pub fn render_chafa_image(path: &Path, w: u16, h: u16) -> Option<String> {
     }
 }
 
+/// Clear the preview area by overwriting with spaces + ANSI reset.
+/// Needed because chafa ANSI output is not fully cleared by ratatui redraws.
+pub fn clear_chafa(x: u16, y: u16, w: u16, h: u16) {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    let _ = write!(stdout, "\x1b[s");
+    let blank = " ".repeat(w as usize);
+    for row in 0..h {
+        let _ = write!(stdout, "\x1b[{};{}H\x1b[0m{}", y + 1 + row, x + 1, blank);
+    }
+    let _ = write!(stdout, "\x1b[u");
+    let _ = stdout.flush();
+}
+
 /// Write a cached chafa ANSI output string to the terminal at (x, y).
 /// Must be called after terminal.draw() since ratatui overwrites it each frame.
 pub fn write_chafa_output(output: &str, x: u16, y: u16, h: u16) {

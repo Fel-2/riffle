@@ -72,6 +72,10 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
                 if state.last_kitty_image.is_some() {
                     if ui::preview::is_kitty() {
                         ui::preview::clear_kitty();
+                    } else if state.cached_chafa_output.is_some() {
+                        if let Some((x, y, w, h)) = state.preview_rect {
+                            ui::preview::clear_chafa(x, y, w, h);
+                        }
                     }
                     state.last_kitty_image = None;
                 }
@@ -81,6 +85,10 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
         } else if state.last_kitty_image.is_some() {
             if ui::preview::is_kitty() {
                 ui::preview::clear_kitty();
+            } else if state.cached_chafa_output.is_some() {
+                if let Some((x, y, w, h)) = state.preview_rect {
+                    ui::preview::clear_chafa(x, y, w, h);
+                }
             }
             state.last_kitty_image = None;
             state.cached_chafa_output = None;
