@@ -134,6 +134,23 @@ fn image_pixel_size(path: &Path) -> Option<(u32, u32)> {
         return None;
     }
 
+    // ── GIF ──────────────────────────────────────────────────────────────────
+    // Header: "GIF87a" or "GIF89a" then width(2 LE) + height(2 LE)
+    if buf.len() >= 10 && &buf[0..4] == b"GIF8" {
+        let w = u16::from_le_bytes([buf[6], buf[7]]) as u32;
+        let h = u16::from_le_bytes([buf[8], buf[9]]) as u32;
+        return Some((w, h));
+    }
+
+    // ── BMP ──────────────────────────────────────────────────────────────────
+    // Header: "BM" then file size(4), reserved(4), offset(4), DIB header size(4),
+    // width(4 LE signed) + height(4 LE signed) at offset 18
+    if buf.len() >= 26 && &buf[0..2] == b"BM" {
+        let w = i32::from_le_bytes([buf[18], buf[19], buf[20], buf[21]]).unsigned_abs();
+        let h = i32::from_le_bytes([buf[22], buf[23], buf[24], buf[25]]).unsigned_abs();
+        return Some((w, h));
+    }
+
     // ── WebP ────────────────────────────────────────────────────────────────
     if buf.len() >= 30 && &buf[0..4] == b"RIFF" && &buf[8..12] == b"WEBP" {
         // Lossy (VP8 ): frame tag(3) + start_code(3) then 14-bit width/height
@@ -183,6 +200,25 @@ fn fit_in_cells(img_w: u32, img_h: u32, max_cols: u16, max_rows: u16) -> (u16, u
     (cols, rows)
 }
 
+/// Load an image file and return PNG-encoded bytes.
+/// If the file is already a PNG it is returned as-is; otherwise
+/// the `image` crate decodes it and re-encodes to PNG.
+fn load_as_png(path: &Path) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let raw = std::fs::read(path)?;
+
+    // Already PNG — skip re-encoding
+    if raw.len() >= 8 && &raw[0..8] == b"\x89PNG\r\n\x1a\n" {
+        return Ok(raw);
+    }
+
+    // Decode whatever format the `image` crate supports and re-encode as PNG
+    let img = image::load_from_memory(&raw)?;
+    let mut png_buf: Vec<u8> = Vec::new();
+    let encoder = image::codecs::png::PngEncoder::new(&mut png_buf);
+    img.write_with_encoder(encoder)?;
+    Ok(png_buf)
+}
+
 /// Send image to the kitty terminal via the graphics protocol.
 /// Dimensions are computed to preserve aspect ratio using real cell pixel metrics.
 pub fn send_kitty_image(
@@ -206,7 +242,7 @@ pub fn send_kitty_image(
         (w, 0u16) // 0 → omit r parameter below
     };
 
-    let data = std::fs::read(path)?;
+    let data = load_as_png(path)?;
     let encoded = crate::utils::base64_encode(&data);
     let bytes = encoded.as_bytes();
 

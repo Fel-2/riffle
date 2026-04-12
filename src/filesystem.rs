@@ -96,7 +96,7 @@ fn detect_file_type(path: &PathBuf, metadata: &fs::Metadata) -> FileType {
         return FileType::Other;
     }
     match ext.as_str() {
-        "jpg"|"jpeg"|"png"|"gif"|"bmp"|"webp"|"svg" => FileType::Image,
+        "jpg"|"jpeg"|"png"|"gif"|"bmp"|"webp"|"svg"|"ico"|"tiff"|"tif"|"tga"|"avif"|"qoi" => FileType::Image,
         "pdf"|"doc"|"docx"|"txt"|"md"|"rtf"|"odt"  => FileType::Document,
         "mp4"|"avi"|"mkv"|"mov"|"wmv"|"webm"        => FileType::Video,
         "mp3"|"wav"|"flac"|"ogg"|"m4a"|"aac"        => FileType::Audio,
