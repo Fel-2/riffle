@@ -40,32 +40,10 @@ pub fn open_file(path: &PathBuf, config: &Config) -> Result<(), String> {
 
 pub fn open_in_editor(path: &Path, config: &Config) -> Result<(), String> {
     let editor = config.editor();
-
-    // Fully restore the terminal before handing it to the editor.
-    // DisableMouseCapture is critical — without it, mouse escape sequences
-    // get fed into the editor as "unknown sequences".
-    crossterm::terminal::disable_raw_mode().map_err(|e| e.to_string())?;
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        crossterm::cursor::Show,
-    ).map_err(|e| e.to_string())?;
-
     let status = Command::new(&editor)
         .arg(path)
         .status()
         .map_err(|e| format!("Failed to launch editor '{}': {}", editor, e))?;
-
-    // Re-acquire the terminal
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-        crossterm::cursor::Hide,
-    ).map_err(|e| e.to_string())?;
-    crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
-
     if !status.success() {
         return Err(format!("Editor exited with status: {}", status));
     }
@@ -73,29 +51,12 @@ pub fn open_in_editor(path: &Path, config: &Config) -> Result<(), String> {
 }
 
 pub fn run_shell_cmd(cmd: &str, dir: &Path) -> Result<(), String> {
-    crossterm::terminal::disable_raw_mode().map_err(|e| e.to_string())?;
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture,
-        crossterm::cursor::Show,
-    ).map_err(|e| e.to_string())?;
-
     let status = Command::new("sh")
         .arg("-c")
         .arg(cmd)
         .current_dir(dir)
         .status()
         .map_err(|e| format!("Failed to run shell command: {}", e))?;
-
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture,
-        crossterm::cursor::Hide,
-    ).map_err(|e| e.to_string())?;
-    crossterm::terminal::enable_raw_mode().map_err(|e| e.to_string())?;
-
     if !status.success() {
         return Err(format!("Command exited with status: {}", status));
     }
@@ -353,6 +314,48 @@ pub fn move_file(from: &PathBuf, to: &PathBuf) -> Result<(), String> {
             e.to_string()
         }
     })
+}
+
+pub fn share_kdeconnect(paths: &[PathBuf]) -> Result<String, String> {
+    let out = Command::new("kdeconnect-cli")
+        .arg("-l")
+        .output()
+        .map_err(|_| "kdeconnect-cli not found — install kdeconnect".to_string())?;
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut device_ids: Vec<String> = Vec::new();
+    for line in stdout.lines() {
+        // Format: "- Device Name: <id> on <ip> via LAN (paired and reachable)"
+        if line.contains("reachable") {
+            if let Some(colon_pos) = line.find(": ") {
+                let rest = &line[colon_pos + 2..];
+                let id_end = rest.find(" on ").or_else(|| rest.find(" (")).unwrap_or(rest.len());
+                let id = rest[..id_end].trim().to_string();
+                if !id.is_empty() {
+                    device_ids.push(id);
+                }
+            }
+        }
+    }
+
+    if device_ids.is_empty() {
+        return Err("No KDE Connect devices reachable".to_string());
+    }
+
+    let n_devices = device_ids.len();
+    let n_files = paths.len();
+    for id in &device_ids {
+        for path in paths {
+            let _ = Command::new("kdeconnect-cli")
+                .arg("--share")
+                .arg(path)
+                .arg("--device")
+                .arg(id)
+                .spawn();
+        }
+    }
+
+    Ok(format!("Shared {} file(s) to {} device(s)", n_files, n_devices))
 }
 
 pub fn compress_zip(path: &Path) -> Result<(), String> {

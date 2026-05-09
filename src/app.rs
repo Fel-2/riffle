@@ -18,6 +18,44 @@ enum LoopAction {
     RunShell(String),
 }
 
+/// Leave alternate screen for subprocess, then create fresh Terminal on return.
+/// Destroys and recreates Terminal so all internal buffers start clean.
+fn run_subprocess<F>(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    f: F,
+) -> anyhow::Result<()>
+where
+    F: FnOnce() -> Result<(), String>,
+{
+    crossterm::terminal::disable_raw_mode()?;
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::LeaveAlternateScreen,
+        crossterm::event::DisableMouseCapture,
+        crossterm::cursor::Show,
+    )?;
+
+    let _ = f();
+
+    crossterm::execute!(
+        std::io::stdout(),
+        crossterm::terminal::EnterAlternateScreen,
+        crossterm::event::EnableMouseCapture,
+        crossterm::cursor::Hide,
+    )?;
+    crossterm::terminal::enable_raw_mode()?;
+
+    // Replace terminal with fresh one — all buffers start empty
+    *terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
+
+    // Drain stale input events from subprocess
+    while crossterm::event::poll(std::time::Duration::from_millis(0))? {
+        let _ = crossterm::event::read()?;
+    }
+
+    Ok(())
+}
+
 pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
     let mut state = AppState::new();
     refresh_tab(&mut state.tabs[0], state.show_hidden);
@@ -122,16 +160,18 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
                         break;
                     }
                     LoopAction::OpenEditor(path) => {
-                        let _ = commands::open_in_editor(&path, &state.config);
-                        terminal.clear()?;
+                        run_subprocess(terminal, || {
+                            commands::open_in_editor(&path, &state.config)
+                        })?;
                         let tab_idx = focused_tab_idx(&state);
                         refresh_tab(&mut state.tabs[tab_idx], state.show_hidden);
                         update_preview(&mut state);
                     }
                     LoopAction::RunShell(cmd) => {
                         let dir = state.focused_tab().current_dir.clone();
-                        let _ = commands::run_shell_cmd(&cmd, &dir);
-                        terminal.clear()?;
+                        run_subprocess(terminal, || {
+                            commands::run_shell_cmd(&cmd, &dir)
+                        })?;
                         let tab_idx = focused_tab_idx(&state);
                         refresh_tab(&mut state.tabs[tab_idx], state.show_hidden);
                         update_preview(&mut state);
@@ -755,6 +795,15 @@ fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopActi
         KeyCode::Char('T') => {
             let dir = state.focused_tab().current_dir.clone();
             let _ = commands::open_terminal(&dir, &state.config);
+        }
+
+        // Share via KDE Connect
+        KeyCode::Char('K') => {
+            let paths = selected_or_cursor(state);
+            match commands::share_kdeconnect(&paths) {
+                Ok(msg) => state.set_status(msg),
+                Err(e)  => state.set_status(format!("KDE Connect: {}", e)),
+            }
         }
 
         // Help

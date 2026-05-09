@@ -88,12 +88,18 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         } else {
             Style::default().fg(Color::Rgb(122, 162, 247)).bg(Color::Rgb(31, 35, 53))
         };
-        // Pad to right-align
-        let left_len: usize = spans.iter().map(|s| s.content.len()).sum();
-        let right_len = right_text.len() + 2;
-        let pad = (area.width as usize).saturating_sub(left_len + right_len);
+        let left_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+        let avail = area.width as usize;
+        let right_chars = right_text.chars().count() + 2;
+        let (display_text, pad) = if left_len + right_chars <= avail {
+            (right_text.clone(), avail - left_len - right_chars)
+        } else {
+            let max = avail.saturating_sub(left_len).saturating_sub(3);
+            let t: String = right_text.chars().take(max).collect();
+            (format!("{}~", t), 0)
+        };
         spans.push(Span::styled(" ".repeat(pad), Style::default().bg(Color::Rgb(31, 35, 53))));
-        spans.push(Span::styled(format!(" {} ", right_text), right_style));
+        spans.push(Span::styled(format!(" {} ", display_text), right_style));
     }
 
     f.render_widget(

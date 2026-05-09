@@ -44,6 +44,7 @@ pub fn render(f: &mut Frame, area: Rect) {
             ("a / A",   "New file / New dir"),
             ("e",       "Open in editor"),
             ("E",       "Extract archive"),
+            ("K",       "Share via KDE Connect"),
         ]),
         ("View", &[
             ("/",       "Search (filter)"),
