@@ -63,7 +63,8 @@ pub fn run_shell_cmd(cmd: &str, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn trash_file(path: &Path) -> Result<(), String> {
+/// Move `path` to the trash. Returns the path it was moved to (for undo).
+pub fn trash_file(path: &Path) -> Result<PathBuf, String> {
     let trash_dir = dirs::home_dir()
         .ok_or("Cannot find home directory")?
         .join(".local/share/Trash/files");
@@ -105,7 +106,7 @@ pub fn trash_file(path: &Path) -> Result<(), String> {
         }
     }
 
-    Ok(())
+    Ok(dest)
 }
 
 pub fn extract_archive(path: &Path) -> Result<(), String> {
@@ -277,6 +278,34 @@ pub fn create_file(path: &Path, name: &str) -> Result<PathBuf, String> {
     let new_file = path.join(name);
     std::fs::File::create(&new_file).map_err(|e| e.to_string())?;
     Ok(new_file)
+}
+
+/// Return a non-colliding path in `dir` for `name`, inserting " (copy)" /
+/// " (copy N)" before the extension when needed. Never overwrites.
+pub fn unique_dest(dir: &Path, name: &std::ffi::OsStr) -> PathBuf {
+    let mut dest = dir.join(name);
+    if !dest.exists() {
+        return dest;
+    }
+    let name = name.to_string_lossy();
+    let (stem, ext) = match name.rsplit_once('.') {
+        // Hidden files like ".bashrc" have no real extension
+        Some((s, e)) if !s.is_empty() => (s.to_string(), format!(".{}", e)),
+        _ => (name.to_string(), String::new()),
+    };
+    let mut i = 1u32;
+    loop {
+        let candidate = if i == 1 {
+            format!("{} (copy){}", stem, ext)
+        } else {
+            format!("{} (copy {}){}", stem, i, ext)
+        };
+        dest = dir.join(candidate);
+        if !dest.exists() {
+            return dest;
+        }
+        i += 1;
+    }
 }
 
 pub fn copy_file(from: &PathBuf, to: &PathBuf) -> Result<(), String> {

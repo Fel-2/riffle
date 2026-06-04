@@ -7,7 +7,28 @@ use crate::filesystem::FileEntry;
 pub enum SortBy { Name, Size, Date, Type }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InputMode { Normal, Search, Rename, GoTo, Shell }
+pub enum InputMode { Normal, Search, Rename, GoTo, Shell, Create, Confirm }
+
+/// Action awaiting confirmation in a modal.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    DeletePermanent(Vec<PathBuf>),
+}
+
+/// Message sent from a background copy/move worker to the UI thread.
+pub enum TaskMsg {
+    Progress { done: usize, total: usize, current: String },
+    Done { ok: usize, total: usize, first_err: Option<String> },
+}
+
+/// A copy/move operation running on a background thread.
+pub struct ActiveTask {
+    pub rx: std::sync::mpsc::Receiver<TaskMsg>,
+    pub label: &'static str, // "Copying" / "Moving"
+    pub done: usize,
+    pub total: usize,
+    pub current: String,
+}
 
 #[derive(Debug, Clone)]
 pub enum PreviewContent {
@@ -28,7 +49,7 @@ pub struct TabState {
     pub cursor: usize,
     pub scroll: usize,
     pub selection: HashSet<PathBuf>,
-    pub renaming: Option<(usize, String)>, // (display_idx, new_name_buf)
+    pub renaming: Option<(usize, String, usize)>, // (display_idx, buf, char_cursor)
     pub git_status: HashMap<String, char>,
 }
 
@@ -89,6 +110,13 @@ pub struct AppState {
     pub input_mode: InputMode,
     pub goto_buf: String,
     pub shell_buf: String,
+    pub create_buf: String,
+    pub create_is_dir: bool,
+    pub confirm: Option<(String, ConfirmAction)>,
+    pub task: Option<ActiveTask>,
+    pub trash_undo: Vec<Vec<(PathBuf, PathBuf)>>, // batches of (original, trashed_dest)
+    pub sidebar_focused: bool,
+    pub sidebar_cursor: usize,
     pub bookmarks: Vec<(String, PathBuf)>,
     pub status: Option<(String, std::time::Instant)>,
     pub show_help: bool,
@@ -145,6 +173,13 @@ impl AppState {
             input_mode: InputMode::Normal,
             goto_buf: String::new(),
             shell_buf: String::new(),
+            create_buf: String::new(),
+            create_is_dir: false,
+            confirm: None,
+            task: None,
+            trash_undo: Vec::new(),
+            sidebar_focused: false,
+            sidebar_cursor: 0,
             bookmarks,
             status: None,
             show_help: false,

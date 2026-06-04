@@ -162,13 +162,16 @@ fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) 
 
         // Check if this row is being renamed
         let is_renaming = is_renaming_mode && is_cursor
-            && state.tabs[tab_idx].renaming.as_ref().map(|(i, _)| *i == display_idx).unwrap_or(false);
+            && state.tabs[tab_idx].renaming.as_ref().map(|(i, _, _)| *i == display_idx).unwrap_or(false);
 
         let line = if is_renaming {
-            let buf = state.tabs[tab_idx].renaming.as_ref().map(|(_, b)| b.as_str()).unwrap_or("").to_string();
+            let (buf, cur) = state.tabs[tab_idx].renaming.as_ref()
+                .map(|(_, b, c)| (b.clone(), *c)).unwrap_or_default();
+            let before: String = buf.chars().take(cur).collect();
+            let after: String = buf.chars().skip(cur).collect();
             Line::from(vec![
                 Span::styled(format!(" {} ", type_icon), Style::default().fg(C_ACCENT).bg(bg)),
-                Span::styled(format!("{}_", buf), Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{}\u{2502}{}", before, after), Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)),
             ])
         } else {
             let sel_marker = if is_selected { "*" } else { " " };

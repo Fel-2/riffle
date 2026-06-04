@@ -42,6 +42,7 @@ cargo build --release
 | `l` / `→` / `Enter` | Open file or enter directory |
 | `g` / `G` | Jump to top / bottom |
 | `PgDn` / `PgUp` | Jump 20 rows |
+| `b` | Focus sidebar (then `j`/`k` move, `Enter` jump, `Esc` leave) |
 | Mouse wheel | Scroll |
 
 ### File Operations
@@ -50,12 +51,13 @@ cargo build --release
 | `Space` | Select / deselect |
 | `y` | Yank (copy) |
 | `x` | Cut |
-| `p` | Paste |
-| `d` / `Del` | Delete permanently |
-| `D` | Move to trash (`~/.local/share/Trash`) |
-| `r` / `F2` | Rename |
+| `p` | Paste (runs in background, auto-renames on conflict, never overwrites) |
+| `d` / `Del` | Move to trash (`~/.local/share/Trash`) |
+| `D` | Delete permanently (asks for confirmation) |
+| `Ctrl+Z` | Undo last trash (restores files) |
+| `r` / `F2` | Rename (cursor starts before the extension) |
 | `e` | Open in `$EDITOR` |
-| `a` / `A` | New file / new directory |
+| `a` / `A` | New file / new directory (prompts for name) |
 | `E` | Extract archive (zip, tar, 7z, rar) |
 
 ### View

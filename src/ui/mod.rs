@@ -1,6 +1,6 @@
 mod content;
 mod help;
-mod sidebar;
+pub mod sidebar;
 mod statusbar;
 pub mod preview;
 
@@ -24,7 +24,8 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
         crate::state::InputMode::Search
         | crate::state::InputMode::GoTo
         | crate::state::InputMode::Rename
-        | crate::state::InputMode::Shell);
+        | crate::state::InputMode::Shell
+        | crate::state::InputMode::Create);
 
     let v_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -84,6 +85,48 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
 
     // Status bar
     statusbar::render(f, v_chunks[3], state);
+
+    // Confirmation modal (overlay, drawn last)
+    if state.input_mode == crate::state::InputMode::Confirm {
+        if let Some((prompt, _)) = &state.confirm {
+            render_confirm(f, area, prompt);
+        }
+    }
+}
+
+fn render_confirm(f: &mut Frame, area: Rect, prompt: &str) {
+    use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::layout::Alignment;
+
+    let hint = "y / Enter = yes      n / Esc = no";
+    let w = (prompt.chars().count().max(hint.len()) as u16 + 6).min(area.width.saturating_sub(2));
+    let h = 5u16;
+    let x = area.x + (area.width.saturating_sub(w)) / 2;
+    let y = area.y + (area.height.saturating_sub(h)) / 2;
+    let modal = Rect { x, y, width: w, height: h };
+
+    f.render_widget(Clear, modal);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Rgb(247, 118, 142)))
+        .style(Style::default().bg(Color::Rgb(26, 27, 38)));
+
+    let lines = vec![
+        Line::from(Span::styled(
+            prompt.to_string(),
+            Style::default().fg(Color::Rgb(192, 202, 245)).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(hint, Style::default().fg(Color::Rgb(86, 95, 137)))),
+    ];
+
+    let para = Paragraph::new(lines)
+        .block(block)
+        .alignment(Alignment::Center);
+    f.render_widget(para, modal);
 }
 
 fn render_path_bar(f: &mut Frame, area: Rect, state: &AppState) {
@@ -132,10 +175,18 @@ fn render_input_bar(f: &mut Frame, area: Rect, state: &AppState) {
         }
         crate::state::InputMode::GoTo => (" > ", format!("{}_", state.goto_buf)),
         crate::state::InputMode::Rename => {
-            let buf = state.focused_tab().renaming.as_ref().map(|(_, b)| b.clone()).unwrap_or_default();
-            (" r ", format!("{}_", buf))
+            let (buf, cur) = state.focused_tab().renaming.as_ref()
+                .map(|(_, b, c)| (b.clone(), *c)).unwrap_or_default();
+            let before: String = buf.chars().take(cur).collect();
+            let after: String = buf.chars().skip(cur).collect();
+            // U+2502 box-drawing char marks the caret position mid-string
+            (" r ", format!("{}\u{2502}{}", before, after))
         }
         crate::state::InputMode::Shell => (" : ", format!("{}_", state.shell_buf)),
+        crate::state::InputMode::Create => {
+            let label = if state.create_is_dir { " mkdir " } else { " new " };
+            (label, format!("{}_", state.create_buf))
+        }
         _ => return,
     };
 

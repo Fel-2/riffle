@@ -7,7 +7,7 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 use crate::commands;
 use crate::filesystem::{read_directory, sort_entries, FileType};
-use crate::state::{AppState, InputMode, PreviewContent, TabState};
+use crate::state::{ActiveTask, AppState, InputMode, PreviewContent, TabState, TaskMsg};
 use crate::ui;
 
 #[derive(Debug)]
@@ -66,6 +66,9 @@ pub fn run(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<
         if let Some((_, t)) = &state.status {
             if t.elapsed().as_secs() >= 3 { state.status = None; }
         }
+
+        // Drain progress from background copy/move worker
+        drain_task(&mut state);
 
         terminal.draw(|f| ui::render(f, &mut state))?;
 
@@ -256,6 +259,44 @@ fn refresh_git_status(tab: &mut TabState) {
     }
 }
 
+/// Pull progress messages from the background worker without blocking.
+/// On completion, refresh the view and report the outcome.
+fn drain_task(state: &mut AppState) {
+    use std::sync::mpsc::TryRecvError;
+    let mut finished: Option<(usize, usize, Option<String>)> = None;
+    if let Some(task) = state.task.as_mut() {
+        loop {
+            match task.rx.try_recv() {
+                Ok(TaskMsg::Progress { done, total, current }) => {
+                    task.done = done;
+                    task.total = total;
+                    task.current = current;
+                }
+                Ok(TaskMsg::Done { ok, total, first_err }) => {
+                    finished = Some((ok, total, first_err));
+                    break;
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    finished = Some((task.done, task.total, None));
+                    break;
+                }
+            }
+        }
+    }
+    if let Some((ok, total, first_err)) = finished {
+        state.task = None;
+        let show = state.show_hidden;
+        // Worker may have written into any tab's directory; refresh them all
+        for tab in &mut state.tabs { refresh_tab(tab, show); }
+        update_preview(state);
+        match first_err {
+            None => state.set_status(format!("Done — {} item(s)", total)),
+            Some(e) => state.set_status(format!("Done {}/{} — {}", ok, total, e)),
+        }
+    }
+}
+
 pub fn update_preview(state: &mut AppState) {
     if !state.preview_enabled {
         state.preview_content = PreviewContent::None;
@@ -339,8 +380,8 @@ fn navigate_to(state: &mut AppState, path: PathBuf) {
 fn handle_key(state: &mut AppState, key: KeyCode, mods: KeyModifiers) -> LoopAction {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
 
-    // Global: quit
-    if key == KeyCode::Char('q') && state.input_mode == InputMode::Normal && !ctrl {
+    // Global: quit (but 'q' just leaves the sidebar when it has focus)
+    if key == KeyCode::Char('q') && state.input_mode == InputMode::Normal && !ctrl && !state.sidebar_focused {
         return LoopAction::Quit;
     }
 
@@ -359,6 +400,8 @@ fn handle_key(state: &mut AppState, key: KeyCode, mods: KeyModifiers) -> LoopAct
         InputMode::Rename  => { handle_rename_key(state, key); LoopAction::Continue }
         InputMode::GoTo    => { handle_goto_key(state, key); LoopAction::Continue }
         InputMode::Shell   => handle_shell_key(state, key),
+        InputMode::Create  => { handle_create_key(state, key); LoopAction::Continue }
+        InputMode::Confirm => { handle_confirm_key(state, key); LoopAction::Continue }
         InputMode::Normal  => handle_normal_key(state, key, ctrl),
     }
 }
@@ -397,10 +440,12 @@ fn handle_rename_key(state: &mut AppState, key: KeyCode) {
             state.input_mode = InputMode::Normal;
         }
         KeyCode::Enter => {
-            if let Some((display_idx, new_name)) = state.tabs[tab_idx].renaming.take() {
+            if let Some((display_idx, new_name, _)) = state.tabs[tab_idx].renaming.take() {
                 let old_path = state.tabs[tab_idx].get_display_entry(display_idx).map(|e| e.path.clone());
                 if let Some(old) = old_path {
-                    let _ = commands::rename_file(&old, &new_name);
+                    if let Err(e) = commands::rename_file(&old, new_name.trim()) {
+                        state.set_status(format!("Rename failed: {}", e));
+                    }
                 }
                 let show = state.show_hidden;
                 refresh_tab(&mut state.tabs[tab_idx], show);
@@ -408,16 +453,88 @@ fn handle_rename_key(state: &mut AppState, key: KeyCode) {
             state.input_mode = InputMode::Normal;
         }
         KeyCode::Backspace => {
-            if let Some((_, ref mut buf)) = state.focused_tab_mut().renaming {
-                buf.pop();
+            if let Some((_, ref mut buf, ref mut cur)) = state.focused_tab_mut().renaming {
+                if *cur > 0 {
+                    let byte = buf.char_indices().nth(*cur - 1).map(|(b, _)| b).unwrap_or(0);
+                    buf.remove(byte);
+                    *cur -= 1;
+                }
+            }
+        }
+        KeyCode::Left => {
+            if let Some((_, _, ref mut cur)) = state.focused_tab_mut().renaming {
+                *cur = cur.saturating_sub(1);
+            }
+        }
+        KeyCode::Right => {
+            if let Some((_, ref buf, ref mut cur)) = state.focused_tab_mut().renaming {
+                *cur = (*cur + 1).min(buf.chars().count());
+            }
+        }
+        KeyCode::Home => {
+            if let Some((_, _, ref mut cur)) = state.focused_tab_mut().renaming { *cur = 0; }
+        }
+        KeyCode::End => {
+            if let Some((_, ref buf, ref mut cur)) = state.focused_tab_mut().renaming {
+                *cur = buf.chars().count();
             }
         }
         KeyCode::Char(c) => {
-            if let Some((_, ref mut buf)) = state.focused_tab_mut().renaming {
-                buf.push(c);
+            if let Some((_, ref mut buf, ref mut cur)) = state.focused_tab_mut().renaming {
+                let byte = buf.char_indices().nth(*cur).map(|(b, _)| b).unwrap_or(buf.len());
+                buf.insert(byte, c);
+                *cur += 1;
             }
         }
         _ => {}
+    }
+}
+
+fn handle_sidebar_key(state: &mut AppState, key: KeyCode) -> LoopAction {
+    let targets = crate::ui::sidebar::nav_targets(state);
+    let n = targets.len();
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => {
+            if n > 0 { state.sidebar_cursor = (state.sidebar_cursor + 1).min(n - 1); }
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            state.sidebar_cursor = state.sidebar_cursor.saturating_sub(1);
+        }
+        KeyCode::Char('g') => { state.sidebar_cursor = 0; }
+        KeyCode::Char('G') => { if n > 0 { state.sidebar_cursor = n - 1; } }
+        // Jump to the selected location
+        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+            if let Some((_, path)) = targets.get(state.sidebar_cursor).cloned() {
+                state.sidebar_focused = false;
+                navigate_to(state, path);
+            }
+        }
+        // Leave sidebar focus, back to the file list
+        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left
+        | KeyCode::Char('q') | KeyCode::Char('b') | KeyCode::Tab => {
+            state.sidebar_focused = false;
+        }
+        _ => {}
+    }
+    LoopAction::Continue
+}
+
+fn start_rename(state: &mut AppState) {
+    let cursor = state.focused_tab().cursor;
+    let name = state.focused_tab().cursor_entry().map(|e| e.name.clone());
+    if let Some(n) = name {
+        let at = rename_cursor_at_stem(&n);
+        state.focused_tab_mut().renaming = Some((cursor, n, at));
+        state.input_mode = InputMode::Rename;
+    }
+}
+
+/// Char index just before a filename's extension dot (so the stem is "selected"
+/// for quick editing); falls back to end of name for dotfiles / no extension.
+fn rename_cursor_at_stem(name: &str) -> usize {
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => name[..dot].chars().count(),
+        _ => name.chars().count(),
     }
 }
 
@@ -462,9 +579,132 @@ fn handle_shell_key(state: &mut AppState, key: KeyCode) -> LoopAction {
     }
 }
 
+fn handle_create_key(state: &mut AppState, key: KeyCode) {
+    let show = state.show_hidden;
+    match key {
+        KeyCode::Esc => {
+            state.create_buf.clear();
+            state.input_mode = InputMode::Normal;
+        }
+        KeyCode::Enter => {
+            let name = state.create_buf.trim().to_string();
+            state.create_buf.clear();
+            state.input_mode = InputMode::Normal;
+            if name.is_empty() { return; }
+            let dir = state.focused_tab().current_dir.clone();
+            let res = if state.create_is_dir {
+                commands::create_directory(&dir, &name).map(|_| ())
+            } else {
+                commands::create_file(&dir, &name).map(|_| ())
+            };
+            let tab_idx = focused_tab_idx(state);
+            refresh_tab(&mut state.tabs[tab_idx], show);
+            match res {
+                Ok(_) => state.set_status(format!("Created '{}'", name)),
+                Err(e) => state.set_status(format!("Create failed: {}", e)),
+            }
+        }
+        KeyCode::Backspace => { state.create_buf.pop(); }
+        KeyCode::Char(c)   => { state.create_buf.push(c); }
+        _ => {}
+    }
+}
+
+fn handle_confirm_key(state: &mut AppState, key: KeyCode) {
+    let show = state.show_hidden;
+    match key {
+        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+            if let Some((_, action)) = state.confirm.take() {
+                match action {
+                    crate::state::ConfirmAction::DeletePermanent(paths) => {
+                        let n = paths.len();
+                        let mut errs = 0;
+                        for p in &paths {
+                            if commands::delete_file(p).is_err() { errs += 1; }
+                        }
+                        state.focused_tab_mut().selection.clear();
+                        let tab_idx = focused_tab_idx(state);
+                        refresh_tab(&mut state.tabs[tab_idx], show);
+                        update_preview(state);
+                        if errs == 0 {
+                            state.set_status(format!("Deleted {} item(s)", n));
+                        } else {
+                            state.set_status(format!("Deleted {}/{} — {} failed", n - errs, n, errs));
+                        }
+                    }
+                }
+            }
+            state.input_mode = InputMode::Normal;
+        }
+        _ => {
+            // Anything else cancels — safe default
+            state.confirm = None;
+            state.input_mode = InputMode::Normal;
+            state.set_status("Cancelled");
+        }
+    }
+}
+
+/// Move selection (or cursor entry) to trash, surfacing any failures.
+/// Records the original→trashed paths so the batch can be undone with Ctrl+Z.
+fn trash_selection(state: &mut AppState, show: bool) {
+    let paths = selected_or_cursor(state);
+    let n = paths.len();
+    if n == 0 { return; }
+    let mut ok = 0;
+    let mut last_err = String::new();
+    let mut batch: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for p in &paths {
+        match commands::trash_file(p) {
+            Ok(dest) => { ok += 1; batch.push((p.clone(), dest)); }
+            Err(e) => last_err = e,
+        }
+    }
+    if !batch.is_empty() { state.trash_undo.push(batch); }
+    state.focused_tab_mut().selection.clear();
+    let tab_idx = focused_tab_idx(state);
+    refresh_tab(&mut state.tabs[tab_idx], show);
+    update_preview(state);
+    if ok == n {
+        state.set_status(format!("Trashed {} item(s) — Ctrl+Z to undo", n));
+    } else {
+        state.set_status(format!("Trashed {}/{} — {}", ok, n, last_err));
+    }
+}
+
+/// Restore the most recent trash batch from the trash back to its origin.
+fn undo_trash(state: &mut AppState, show: bool) {
+    let Some(batch) = state.trash_undo.pop() else {
+        state.set_status("Nothing to undo");
+        return;
+    };
+    let n = batch.len();
+    let mut ok = 0;
+    let mut last_err = String::new();
+    for (orig, trashed) in &batch {
+        match commands::move_file(trashed, orig) {
+            Ok(_) => ok += 1,
+            Err(e) => last_err = e,
+        }
+    }
+    let tab_idx = focused_tab_idx(state);
+    refresh_tab(&mut state.tabs[tab_idx], show);
+    update_preview(state);
+    if ok == n {
+        state.set_status(format!("Restored {} item(s)", n));
+    } else {
+        state.set_status(format!("Restored {}/{} — {}", ok, n, last_err));
+    }
+}
+
 fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopAction {
     let show = state.show_hidden;
     let tab_idx = focused_tab_idx(state);
+
+    // When the sidebar holds focus, all normal keys drive it instead
+    if state.sidebar_focused {
+        return handle_sidebar_key(state, key);
+    }
 
     match key {
         // Navigation
@@ -576,90 +816,77 @@ fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopActi
             }
         }
         KeyCode::Char('p') if !ctrl => {
-            let dest = state.focused_tab().current_dir.clone();
-            if let Some((paths, is_cut)) = state.clipboard.clone() {
-                let n = paths.len();
-                for path in &paths {
-                    let d = dest.join(path.file_name().unwrap_or_default());
-                    let _ = if is_cut { commands::move_file(path, &d) } else { commands::copy_file(path, &d) };
-                }
+            if state.task.is_some() {
+                state.set_status("Busy — another operation is running");
+            } else if let Some((paths, is_cut)) = state.clipboard.clone() {
+                let dest = state.focused_tab().current_dir.clone();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let total = paths.len();
+                let label = if is_cut { "Moving" } else { "Copying" };
+
+                // Worker thread: copy/move each item, report progress, never block UI
+                std::thread::spawn(move || {
+                    let mut ok = 0usize;
+                    let mut first_err: Option<String> = None;
+                    for (i, path) in paths.iter().enumerate() {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+                        let _ = tx.send(TaskMsg::Progress { done: i, total, current: name.clone() });
+                        let d = commands::unique_dest(&dest, path.file_name().unwrap_or_default());
+                        let res = if is_cut {
+                            commands::move_file(path, &d)
+                        } else {
+                            commands::copy_file(path, &d)
+                        };
+                        match res {
+                            Ok(_) => ok += 1,
+                            Err(e) => if first_err.is_none() {
+                                first_err = Some(format!("{}: {}", name, e));
+                            }
+                        }
+                    }
+                    let _ = tx.send(TaskMsg::Done { ok, total, first_err });
+                });
+
                 if is_cut { state.clipboard = None; }
                 state.focused_tab_mut().selection.clear();
-                let tab_idx2 = focused_tab_idx(state);
-                refresh_tab(&mut state.tabs[tab_idx2], show);
-                update_preview(state);
-                state.set_status(format!("Pasted {} item(s)", n));
+                state.task = Some(ActiveTask { rx, label, done: 0, total, current: String::new() });
             }
         }
 
-        // Hard delete (permanent)
-        KeyCode::Char('d') if !ctrl => {
-            let paths = selected_or_cursor(state);
-            let n = paths.len();
-            for p in &paths { let _ = commands::delete_file(p); }
-            state.focused_tab_mut().selection.clear();
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show);
-            update_preview(state);
-            state.set_status(format!("Deleted {} item(s)", n));
-        }
-        KeyCode::Delete => {
-            let paths = selected_or_cursor(state);
-            let n = paths.len();
-            for p in &paths { let _ = commands::delete_file(p); }
-            state.focused_tab_mut().selection.clear();
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show);
-            update_preview(state);
-            state.set_status(format!("Deleted {} item(s)", n));
+        // Trash (recoverable) — safe default, like Dolphin's Delete key
+        KeyCode::Char('d') | KeyCode::Delete if !ctrl => {
+            trash_selection(state, show);
         }
 
-        // Trash (recoverable)
+        // Permanent delete — requires confirmation modal
         KeyCode::Char('D') => {
             let paths = selected_or_cursor(state);
-            let n = paths.len();
-            let mut ok = 0;
-            for p in &paths {
-                if commands::trash_file(p).is_ok() { ok += 1; }
+            if !paths.is_empty() {
+                let prompt = if paths.len() == 1 {
+                    format!("Permanently delete '{}'?", paths[0].file_name().unwrap_or_default().to_string_lossy())
+                } else {
+                    format!("Permanently delete {} items?", paths.len())
+                };
+                state.confirm = Some((prompt, crate::state::ConfirmAction::DeletePermanent(paths)));
+                state.input_mode = InputMode::Confirm;
             }
-            state.focused_tab_mut().selection.clear();
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show);
-            update_preview(state);
-            state.set_status(format!("Trashed {}/{} item(s)", ok, n));
         }
 
         // Rename
-        KeyCode::Char('r') if !ctrl => {
-            let cursor = state.focused_tab().cursor;
-            let name = state.focused_tab().cursor_entry().map(|e| e.name.clone());
-            if let Some(n) = name {
-                state.focused_tab_mut().renaming = Some((cursor, n));
-                state.input_mode = InputMode::Rename;
-            }
-        }
-        KeyCode::F(2) => {
-            let cursor = state.focused_tab().cursor;
-            let name = state.focused_tab().cursor_entry().map(|e| e.name.clone());
-            if let Some(n) = name {
-                state.focused_tab_mut().renaming = Some((cursor, n));
-                state.input_mode = InputMode::Rename;
-            }
-        }
+        KeyCode::Char('r') if !ctrl => { start_rename(state); }
+        KeyCode::F(2) => { start_rename(state); }
 
-        // Create file
+        // Create file — prompt for name
         KeyCode::Char('a') if !ctrl => {
-            let dir = state.focused_tab().current_dir.clone();
-            let _ = commands::create_file(&dir, "new_file.txt");
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show);
+            state.create_buf.clear();
+            state.create_is_dir = false;
+            state.input_mode = InputMode::Create;
         }
-        // Create directory
+        // Create directory — prompt for name
         KeyCode::Char('A') => {
-            let dir = state.focused_tab().current_dir.clone();
-            let _ = commands::create_directory(&dir, "New Folder");
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show);
+            state.create_buf.clear();
+            state.create_is_dir = true;
+            state.input_mode = InputMode::Create;
         }
 
         // Toggle hidden
@@ -808,6 +1035,21 @@ fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopActi
 
         // Help
         KeyCode::Char('?') => { state.show_help = true; }
+
+        // Undo last trash (Ctrl+Z)
+        KeyCode::Char('z') if ctrl => {
+            undo_trash(state, show);
+        }
+
+        // Focus the sidebar (bookmarks / drives)
+        KeyCode::Char('b') if !ctrl => {
+            let targets = crate::ui::sidebar::nav_targets(state);
+            if !targets.is_empty() {
+                let cur = state.focused_tab().current_dir.clone();
+                state.sidebar_cursor = targets.iter().position(|(_, p)| *p == cur).unwrap_or(0);
+                state.sidebar_focused = true;
+            }
+        }
 
         // Bookmark current dir (Ctrl+B)
         KeyCode::Char('b') if ctrl => {

@@ -60,8 +60,11 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
         spans.push(Span::styled(info, Style::default().fg(Color::Rgb(169, 177, 214)).bg(Color::Rgb(31, 35, 53))));
     }
 
-    // Right side: status message or mode indicator
-    let right_text = if let Some((msg, _)) = &state.status {
+    // Right side: active task progress > status message > mode indicator
+    let right_text = if let Some(t) = &state.task {
+        let name: String = t.current.chars().take(24).collect();
+        format!("{} {}/{}  {}", t.label, (t.done + 1).min(t.total.max(1)), t.total, name)
+    } else if let Some((msg, _)) = &state.status {
         msg.clone()
     } else {
         match state.input_mode {
@@ -69,8 +72,13 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             InputMode::Rename => "RENAME".to_string(),
             InputMode::GoTo   => "GOTO".to_string(),
             InputMode::Shell  => "SHELL".to_string(),
+            InputMode::Create => "CREATE".to_string(),
+            InputMode::Confirm => "CONFIRM".to_string(),
             InputMode::Normal => {
                 let mut parts = Vec::new();
+                if state.sidebar_focused {
+                    parts.push("SIDEBAR");
+                }
                 if state.dual_pane {
                     if state.right_focused { parts.push("DUAL [R]"); } else { parts.push("DUAL [L]"); }
                 }
