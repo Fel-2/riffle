@@ -1,12 +1,15 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
 };
 
+use crate::theme::theme;
+
 pub fn render(f: &mut Frame, area: Rect) {
+    let t = theme();
     let popup_w = 70u16.min(area.width);
     let popup_h = 40u16.min(area.height);
     let x = (area.width.saturating_sub(popup_w)) / 2;
@@ -18,8 +21,8 @@ pub fn render(f: &mut Frame, area: Rect) {
     let block = Block::default()
         .title(" Keyboard Shortcuts  [F1 / ? to close] ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(122, 162, 247)))
-        .style(Style::default().bg(Color::Rgb(26, 27, 38)));
+        .border_style(Style::default().fg(t.accent))
+        .style(Style::default().bg(t.bg));
     let inner = block.inner(popup);
     f.render_widget(block, popup);
 
@@ -46,6 +49,7 @@ pub fn render(f: &mut Frame, area: Rect) {
             ("a / A",   "New file / New dir (named)"),
             ("e",       "Open in editor"),
             ("E",       "Extract archive"),
+            ("Z",       "Compress to zip"),
             ("K",       "Share via KDE Connect"),
         ]),
         ("View", &[
@@ -81,12 +85,12 @@ pub fn render(f: &mut Frame, area: Rect) {
             let mut lines: Vec<Line> = Vec::new();
             lines.push(Line::from(Span::styled(
                 format!(" {}", section),
-                Style::default().fg(Color::Rgb(122, 162, 247)).add_modifier(Modifier::BOLD),
+                Style::default().fg(t.accent).add_modifier(Modifier::BOLD),
             )));
             for (key, desc) in *bindings {
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:14}", key), Style::default().fg(Color::Rgb(158, 206, 106))),
-                    Span::styled(*desc, Style::default().fg(Color::Rgb(169, 177, 214))),
+                    Span::styled(format!("  {:14}", key), Style::default().fg(t.green)),
+                    Span::styled(*desc, Style::default().fg(t.fg)),
                 ]));
             }
             lines.push(Line::from(""));
@@ -94,7 +98,7 @@ pub fn render(f: &mut Frame, area: Rect) {
         }).collect();
 
         f.render_widget(
-            Paragraph::new(rows).style(Style::default().bg(Color::Rgb(26, 27, 38))),
+            Paragraph::new(rows).style(Style::default().bg(t.bg)),
             col_area,
         );
     }

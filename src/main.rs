@@ -8,9 +8,11 @@ use ratatui::{backend::CrosstermBackend, Terminal};
 
 mod app;
 mod commands;
+mod input;
 mod config;
 mod filesystem;
 mod state;
+mod theme;
 mod ui;
 mod utils;
 

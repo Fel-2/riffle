@@ -1,19 +1,13 @@
 use std::path::PathBuf;
 use ratatui::{
     layout::Rect,
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use crate::state::AppState;
-
-const C_ACCENT: Color = Color::Rgb(122, 162, 247);
-const C_FG:     Color = Color::Rgb(169, 177, 214);
-const C_DIM:    Color = Color::Rgb(86, 95, 137);
-const C_BG:     Color = Color::Rgb(31, 35, 53);
-const C_SEL:    Color = Color::Rgb(54, 74, 130);
-const C_FOCUS:  Color = Color::Rgb(122, 162, 247); // cursor bg when sidebar has focus
+use crate::theme::theme;
 
 /// Flat, ordered list of navigable sidebar targets (bookmarks then drives).
 /// The order here must match the render order so `sidebar_cursor` lines up.
@@ -51,10 +45,11 @@ pub fn nav_targets(state: &AppState) -> Vec<(String, PathBuf)> {
 }
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
+    let t = theme();
     let block = Block::default()
         .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(Color::Rgb(41, 46, 66)))
-        .style(Style::default().bg(C_BG));
+        .border_style(Style::default().fg(t.bg_highlight))
+        .style(Style::default().bg(t.bg_panel));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -83,11 +78,11 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     // Style for a navigable target at flat index `idx`
     let target_style = |idx: usize, path: &PathBuf| {
         if focused && idx == cursor {
-            Style::default().fg(C_BG).bg(C_FOCUS).add_modifier(Modifier::BOLD)
+            Style::default().fg(t.bg_panel).bg(t.accent).add_modifier(Modifier::BOLD)
         } else if *path == cur_dir {
-            Style::default().fg(C_ACCENT).bg(C_SEL).add_modifier(Modifier::BOLD)
+            Style::default().fg(t.accent).bg(t.bg_selection).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(C_FG).bg(C_BG)
+            Style::default().fg(t.fg).bg(t.bg_panel)
         }
     };
 
@@ -96,7 +91,7 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     // Bookmarks
     let bm_label = if focused { " Bookmarks  [j/k Enter, Esc]" } else { " Bookmarks" };
-    row!(bm_label, Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD));
+    row!(bm_label, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
     for (idx, (name, path)) in targets.iter().enumerate().take(n_bookmarks) {
         row!(format!("  {}", name), target_style(idx, path));
     }
@@ -104,14 +99,14 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     if y < max_y {
         let sep = "-".repeat(w);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(Color::Rgb(41, 46, 66))))),
+            Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(t.bg_highlight)))),
             Rect { y, height: 1, ..inner },
         );
         y += 1;
     }
 
     // Drives
-    row!(" Drives", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD));
+    row!(" Drives", Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
     for (idx, (name, path)) in targets.iter().enumerate().skip(n_bookmarks) {
         row!(format!("  {}", name), target_style(idx, path));
     }
@@ -119,22 +114,22 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     if y < max_y {
         let sep = "-".repeat(w);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(Color::Rgb(41, 46, 66))))),
+            Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(t.bg_highlight)))),
             Rect { y, height: 1, ..inner },
         );
         y += 1;
     }
 
     // Path breadcrumbs (display only, not navigable)
-    row!(" Path", Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD));
+    row!(" Path", Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
     let ancestors: Vec<_> = cur_dir.ancestors().map(|p| p.to_path_buf()).collect();
     for ancestor in ancestors.iter().rev().take(8) {
         let name = ancestor.file_name().and_then(|n| n.to_str()).unwrap_or("/");
         let sel = ancestor == &cur_dir;
         let style = if sel {
-            Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(C_DIM)
+            Style::default().fg(t.dim)
         };
         row!(format!("  {}", name), style);
     }

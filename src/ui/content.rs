@@ -7,58 +7,48 @@ use ratatui::{
 };
 use crate::filesystem::FileType;
 use crate::state::{AppState, InputMode};
+use crate::theme::theme;
 use crate::utils;
 
-// Tokyo Night colors
-const C_DIR:    Color = Color::Rgb(125, 207, 255);
-const C_IMAGE:  Color = Color::Rgb(187, 154, 247);
-const C_EXEC:   Color = Color::Rgb(158, 206, 106);
-const C_ARCH:   Color = Color::Rgb(255, 158, 100);
-const C_AUDIO:  Color = Color::Rgb(224, 175, 104);
-const C_CODE:   Color = Color::Rgb(122, 162, 247);
-const C_HIDDEN: Color = Color::Rgb(86, 95, 137);
-const C_FG:     Color = Color::Rgb(169, 177, 214);
-const C_BG:     Color = Color::Rgb(26, 27, 38);
-const C_SEL_BG: Color = Color::Rgb(54, 74, 130);
-const C_CUR_BG: Color = Color::Rgb(41, 46, 66);
-const C_ACCENT: Color = Color::Rgb(122, 162, 247);
-
 fn entry_color(is_dir: bool, is_hidden: bool, ft: &FileType) -> Color {
-    if is_dir    { return C_DIR; }
-    if is_hidden { return C_HIDDEN; }
+    let t = theme();
+    if is_dir    { return t.cyan; }
+    if is_hidden { return t.dim; }
     match ft {
-        FileType::Image      => C_IMAGE,
-        FileType::Executable => C_EXEC,
-        FileType::Archive    => C_ARCH,
-        FileType::Audio      => C_AUDIO,
-        FileType::Code       => C_CODE,
-        _                    => C_FG,
+        FileType::Image      => t.purple,
+        FileType::Executable => t.green,
+        FileType::Archive    => t.orange,
+        FileType::Audio      => t.yellow,
+        FileType::Code       => t.accent,
+        _                    => t.fg,
     }
 }
 
 fn git_char_style(ch: char) -> Style {
+    let t = theme();
     match ch {
-        'M' => Style::default().fg(Color::Yellow),
-        'A' => Style::default().fg(Color::Rgb(158, 206, 106)),
-        'D' => Style::default().fg(Color::Rgb(247, 118, 142)),
-        'R' => Style::default().fg(Color::Rgb(122, 162, 247)),
-        'U' => Style::default().fg(Color::Rgb(255, 158, 100)),
-        '?' => Style::default().fg(Color::Rgb(86, 95, 137)),
-        _   => Style::default().fg(Color::Rgb(86, 95, 137)),
+        'M' => Style::default().fg(t.yellow),
+        'A' => Style::default().fg(t.green),
+        'D' => Style::default().fg(t.red),
+        'R' => Style::default().fg(t.accent),
+        'U' => Style::default().fg(t.orange),
+        '?' => Style::default().fg(t.dim),
+        _   => Style::default().fg(t.dim),
     }
 }
 
 pub fn render_pane(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize, focused: bool) {
+    let t = theme();
     let border_style = if focused {
-        Style::default().fg(C_ACCENT)
+        Style::default().fg(t.accent)
     } else {
-        Style::default().fg(Color::Rgb(41, 46, 66))
+        Style::default().fg(t.bg_highlight)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
-        .style(Style::default().bg(C_BG));
+        .style(Style::default().bg(t.bg));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -74,6 +64,7 @@ pub fn render_pane(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usi
 }
 
 fn render_header(f: &mut Frame, area: Rect, state: &AppState, tab_idx: usize) {
+    let t = theme();
     let tab = &state.tabs[tab_idx];
     use crate::state::SortBy;
     let sort_label = match tab.sort_by {
@@ -102,13 +93,14 @@ fn render_header(f: &mut Frame, area: Rect, state: &AppState, tab_idx: usize) {
     };
 
     let line = Line::from(vec![
-        Span::styled(left, Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
-        Span::styled(right, Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(left, Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(right, Style::default().fg(t.accent).add_modifier(Modifier::BOLD)),
     ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(Color::Rgb(31, 35, 53))), area);
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg_panel)), area);
 }
 
 fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) {
+    let t = theme();
     let visible = area.height as usize;
 
     // Update scroll to keep cursor visible
@@ -153,10 +145,10 @@ fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) 
         let is_cursor = display_idx == cursor;
         let is_selected = state.tabs[tab_idx].selection.contains(&path);
 
-        let bg = if is_cursor && is_selected { C_SEL_BG }
-            else if is_cursor   { C_CUR_BG }
-            else if is_selected { C_SEL_BG }
-            else                { C_BG };
+        let bg = if is_cursor && is_selected { t.bg_selection }
+            else if is_cursor   { t.bg_highlight }
+            else if is_selected { t.bg_selection }
+            else                { t.bg };
 
         let name_color = entry_color(is_dir, is_hidden, &file_type);
 
@@ -170,8 +162,8 @@ fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) 
             let before: String = buf.chars().take(cur).collect();
             let after: String = buf.chars().skip(cur).collect();
             Line::from(vec![
-                Span::styled(format!(" {} ", type_icon), Style::default().fg(C_ACCENT).bg(bg)),
-                Span::styled(format!("{}\u{2502}{}", before, after), Style::default().fg(Color::Yellow).bg(bg).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {} ", type_icon), Style::default().fg(t.accent).bg(bg)),
+                Span::styled(format!("{}\u{2502}{}", before, after), Style::default().fg(t.yellow).bg(bg).add_modifier(Modifier::BOLD)),
             ])
         } else {
             let sel_marker = if is_selected { "*" } else { " " };
@@ -207,12 +199,12 @@ fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) 
             let git_style = git_char_style(git_ch).bg(bg);
 
             Line::from(vec![
-                Span::styled(format!("{}{} ", sel_marker, type_icon), Style::default().fg(if is_selected { Color::Yellow } else { C_HIDDEN }).bg(bg)),
+                Span::styled(format!("{}{} ", sel_marker, type_icon), Style::default().fg(if is_selected { t.yellow } else { t.dim }).bg(bg)),
                 Span::styled(git_str, git_style),
                 Span::styled(padded_name, Style::default().fg(name_color).bg(bg)),
-                Span::styled(size_str, Style::default().fg(Color::Rgb(150, 150, 180)).bg(bg)),
+                Span::styled(size_str, Style::default().fg(t.muted).bg(bg)),
                 Span::styled("  ", Style::default().bg(bg)),
-                Span::styled(date_str, Style::default().fg(Color::Rgb(86, 95, 137)).bg(bg)),
+                Span::styled(date_str, Style::default().fg(t.dim).bg(bg)),
             ])
         };
 
@@ -229,7 +221,7 @@ fn render_list(f: &mut Frame, area: Rect, state: &mut AppState, tab_idx: usize) 
         let center_y = area.y + area.height / 2;
         let msg_area = Rect { y: center_y, height: 1, ..area };
         let para = Paragraph::new(msg)
-            .style(Style::default().fg(C_HIDDEN).bg(C_BG))
+            .style(Style::default().fg(t.dim).bg(t.bg))
             .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(para, msg_area);
     }

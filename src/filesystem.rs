@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use crate::state::SortBy;
 
@@ -85,7 +85,7 @@ impl FileEntry {
     }
 }
 
-fn detect_file_type(path: &PathBuf, metadata: &fs::Metadata) -> FileType {
+fn detect_file_type(path: &Path, metadata: &fs::Metadata) -> FileType {
     if metadata.is_dir() { return FileType::Directory; }
     let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
     if ext.is_empty() {
@@ -114,7 +114,7 @@ pub fn read_directory(path: &PathBuf, show_hidden: bool) -> Vec<FileEntry> {
         .collect()
 }
 
-pub fn sort_entries(entries: &mut Vec<FileEntry>, sort_by: SortBy, ascending: bool) {
+pub fn sort_entries(entries: &mut [FileEntry], sort_by: SortBy, ascending: bool) {
     entries.sort_by(|a, b| {
         // Dirs always first
         if a.is_dir != b.is_dir {
@@ -128,4 +128,78 @@ pub fn sort_entries(entries: &mut Vec<FileEntry>, sort_by: SortBy, ascending: bo
         };
         if ascending { cmp } else { cmp.reverse() }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn touch(dir: &std::path::Path, name: &str, len: usize) {
+        std::fs::write(dir.join(name), vec![b'x'; len]).unwrap();
+    }
+
+    #[test]
+    fn read_directory_filters_hidden() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), "visible.txt", 1);
+        touch(t.path(), ".hidden", 1);
+
+        let shown = read_directory(&t.path().to_path_buf(), false);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].name, "visible.txt");
+
+        let all = read_directory(&t.path().to_path_buf(), true);
+        assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn sort_puts_directories_first() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), "aaa.txt", 1);
+        std::fs::create_dir(t.path().join("zzz")).unwrap();
+
+        let mut entries = read_directory(&t.path().to_path_buf(), false);
+        sort_entries(&mut entries, SortBy::Name, true);
+        assert!(entries[0].is_dir);
+        assert_eq!(entries[0].name, "zzz");
+    }
+
+    #[test]
+    fn sort_by_size_descending() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), "small", 1);
+        touch(t.path(), "big", 100);
+
+        let mut entries = read_directory(&t.path().to_path_buf(), false);
+        sort_entries(&mut entries, SortBy::Size, false);
+        assert_eq!(entries[0].name, "big");
+    }
+
+    #[test]
+    fn detects_symlinks() {
+        let t = tempfile::tempdir().unwrap();
+        touch(t.path(), "target.txt", 1);
+        std::os::unix::fs::symlink(t.path().join("target.txt"), t.path().join("link.txt")).unwrap();
+
+        let entry = FileEntry::from_path(&t.path().join("link.txt")).unwrap();
+        assert!(entry.is_symlink);
+        assert_eq!(entry.symlink_target, Some(t.path().join("target.txt")));
+    }
+
+    #[test]
+    fn detects_file_types_by_extension() {
+        let t = tempfile::tempdir().unwrap();
+        for (name, expect) in [
+            ("a.png", FileType::Image),
+            ("a.pdf", FileType::Document),
+            ("a.mkv", FileType::Video),
+            ("a.flac", FileType::Audio),
+            ("a.rs", FileType::Code),
+            ("a.zip", FileType::Archive),
+        ] {
+            touch(t.path(), name, 1);
+            let e = FileEntry::from_path(&t.path().join(name)).unwrap();
+            assert_eq!(e.file_type, expect, "{}", name);
+        }
+    }
 }

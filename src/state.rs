@@ -15,6 +15,24 @@ pub enum ConfirmAction {
     DeletePermanent(Vec<PathBuf>),
 }
 
+/// Async `git status` plumbing. Requests are spawned per directory on a
+/// background thread so navigation never blocks on git; results come back
+/// through the channel and are drained in the main loop. The cache gives an
+/// instant (possibly stale) status while the fresh one is computed.
+pub struct GitWorker {
+    pub tx: std::sync::mpsc::Sender<(PathBuf, HashMap<String, char>)>,
+    pub rx: std::sync::mpsc::Receiver<(PathBuf, HashMap<String, char>)>,
+    pub pending: HashSet<PathBuf>,
+    pub cache: HashMap<PathBuf, HashMap<String, char>>,
+}
+
+impl GitWorker {
+    pub fn new() -> Self {
+        let (tx, rx) = std::sync::mpsc::channel();
+        Self { tx, rx, pending: HashSet::new(), cache: HashMap::new() }
+    }
+}
+
 /// Message sent from a background copy/move worker to the UI thread.
 pub enum TaskMsg {
     Progress { done: usize, total: usize, current: String },
@@ -127,12 +145,14 @@ pub struct AppState {
     pub last_kitty_image: Option<PathBuf>,
     pub preview_image_pending: Option<(PathBuf, std::time::Instant)>,
     pub cached_chafa_output: Option<String>,
+    pub git: GitWorker,
     pub config: Config,
 }
 
 impl AppState {
     pub fn new() -> Self {
         let cfg = crate::config::load();
+        crate::theme::init(&cfg.theme);
 
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
 
@@ -190,6 +210,7 @@ impl AppState {
             last_kitty_image: None,
             preview_image_pending: None,
             cached_chafa_output: None,
+            git: GitWorker::new(),
             config: cfg,
         }
     }

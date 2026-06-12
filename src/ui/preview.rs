@@ -1,25 +1,22 @@
 use std::path::Path;
 use ratatui::{
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
 use crate::state::{AppState, PreviewContent};
+use crate::theme::theme;
 use crate::utils;
 
-const C_FG:     Color = Color::Rgb(169, 177, 214);
-const C_BG:     Color = Color::Rgb(26, 27, 38);
-const C_DIM:    Color = Color::Rgb(86, 95, 137);
-const C_ACCENT: Color = Color::Rgb(122, 162, 247);
-
 pub fn render(f: &mut Frame, area: Rect, state: &mut AppState) {
+    let t = theme();
     let block = Block::default()
         .title(" Preview ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(41, 46, 66)))
-        .style(Style::default().bg(C_BG));
+        .border_style(Style::default().fg(t.bg_highlight))
+        .style(Style::default().bg(t.bg));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -34,36 +31,36 @@ pub fn render(f: &mut Frame, area: Rect, state: &mut AppState) {
     match &state.preview_content.clone() {
         PreviewContent::None => {
             let para = Paragraph::new("No preview")
-                .style(Style::default().fg(C_DIM).bg(C_BG))
+                .style(Style::default().fg(t.dim).bg(t.bg))
                 .alignment(Alignment::Center);
             f.render_widget(para, inner);
         }
         PreviewContent::Text(lines) => {
             let display_lines: Vec<Line> = lines.iter()
-                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(C_FG))))
+                .map(|l| Line::from(Span::styled(l.clone(), Style::default().fg(t.fg))))
                 .collect();
             let para = Paragraph::new(display_lines)
-                .style(Style::default().bg(C_BG));
+                .style(Style::default().bg(t.bg));
             f.render_widget(para, inner);
         }
         PreviewContent::Image(_) => {
             // Actual image drawn via kitty protocol after frame; show placeholder
             let para = Paragraph::new("[ Image Preview ]")
-                .style(Style::default().fg(C_ACCENT).add_modifier(Modifier::BOLD).bg(C_BG))
+                .style(Style::default().fg(t.accent).add_modifier(Modifier::BOLD).bg(t.bg))
                 .alignment(Alignment::Center);
             f.render_widget(para, inner);
         }
         PreviewContent::Binary { size } => {
             let text = format!("Binary file  {}", utils::format_size(*size));
             let para = Paragraph::new(text)
-                .style(Style::default().fg(C_DIM).bg(C_BG))
+                .style(Style::default().fg(t.dim).bg(t.bg))
                 .alignment(Alignment::Center);
             f.render_widget(para, inner);
         }
         PreviewContent::Directory { count } => {
             let text = format!("Directory  {} items", count);
             let para = Paragraph::new(text)
-                .style(Style::default().fg(C_ACCENT).bg(C_BG))
+                .style(Style::default().fg(t.accent).bg(t.bg))
                 .alignment(Alignment::Center);
             f.render_widget(para, inner);
         }

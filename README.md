@@ -8,7 +8,7 @@ A fast terminal file manager written in Rust, built with [ratatui](https://githu
 
 - **Tokyo Night** color scheme throughout
 - **Nerd Font icons** for file types
-- **Image preview** via kitty graphics protocol (PNG, JPEG, WebP — aspect ratio preserved)
+- **Image preview** via kitty graphics protocol, with [chafa](https://hpjansson.org/chafa/) fallback for other terminals (PNG, JPEG, WebP — aspect ratio preserved)
 - **Text preview** for code and document files
 - **Git status indicators** (`M` modified, `A` added, `D` deleted, `?` untracked)
 - **Dual pane** side-by-side view
@@ -20,12 +20,12 @@ A fast terminal file manager written in Rust, built with [ratatui](https://githu
 ## Requirements
 
 - A [Nerd Font](https://www.nerdfonts.com/) in your terminal
-- [kitty](https://sw.kovidgoyal.net/kitty/) terminal for image preview
+- For image preview: [kitty](https://sw.kovidgoyal.net/kitty/) terminal, or `chafa` installed for any other terminal
 
 ## Installation
 
 ```bash
-git clone https://github.com/yourname/riffle
+git clone https://codeberg.org/Fel/riffle
 cd riffle
 cargo build --release
 ./target/release/riffle
@@ -59,6 +59,8 @@ cargo build --release
 | `e` | Open in `$EDITOR` |
 | `a` / `A` | New file / new directory (prompts for name) |
 | `E` | Extract archive (zip, tar, 7z, rar) |
+| `Z` | Compress to zip (falls back to tar.gz) |
+| `K` | Share via KDE Connect |
 
 ### View
 | Key | Action |
@@ -122,6 +124,19 @@ sort_by         = "name"  # "name", "size", "date", "type"
 sort_ascending  = true
 preview_enabled = false   # open with preview pane visible
 sidebar_width   = 20      # bookmark sidebar width in columns
+```
+
+### Theme
+
+Every color can be overridden in the `[theme]` section with `"#rrggbb"` values.
+Defaults are Tokyo Night.
+
+```toml
+[theme]
+accent = "#7aa2f7"  # borders, headers
+cyan   = "#7dcfff"  # directories
+# bg, bg_panel, bg_highlight, bg_selection, fg, fg_bright, dim, muted,
+# green, yellow, orange, red, purple — see generated config.toml for the full list
 ```
 
 ### Bookmarks

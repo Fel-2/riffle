@@ -1,14 +1,16 @@
 use ratatui::{
     layout::Rect,
-    style::{Color, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
 use crate::state::{AppState, InputMode};
+use crate::theme::theme;
 use crate::utils;
 
 pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
+    let t = theme();
     let tab = state.focused_tab();
     let total = tab.display_count();
     let cursor = if total == 0 { 0 } else { tab.cursor + 1 };
@@ -19,11 +21,11 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     // Position
     spans.push(Span::styled(
         format!(" {}/{} ", cursor, total),
-        Style::default().fg(Color::Rgb(122, 162, 247)).bg(Color::Rgb(31, 35, 53)),
+        Style::default().fg(t.accent).bg(t.bg_panel),
     ));
 
     // Separator
-    spans.push(Span::styled("|", Style::default().fg(Color::Rgb(41, 46, 66)).bg(Color::Rgb(31, 35, 53))));
+    spans.push(Span::styled("|", Style::default().fg(t.bg_highlight).bg(t.bg_panel)));
 
     // Dir (truncated)
     let dir = tab.current_dir.to_string_lossy().into_owned();
@@ -37,27 +39,38 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
     };
     spans.push(Span::styled(
         format!(" {} ", dir_str),
-        Style::default().fg(Color::Rgb(169, 177, 214)).bg(Color::Rgb(31, 35, 53)),
+        Style::default().fg(t.fg).bg(t.bg_panel),
     ));
 
     // Selected count
     if selected > 0 {
-        spans.push(Span::styled("|", Style::default().fg(Color::Rgb(41, 46, 66)).bg(Color::Rgb(31, 35, 53))));
+        spans.push(Span::styled("|", Style::default().fg(t.bg_highlight).bg(t.bg_panel)));
         spans.push(Span::styled(
             format!(" {} sel ", selected),
-            Style::default().fg(Color::Yellow).bg(Color::Rgb(31, 35, 53)),
+            Style::default().fg(t.yellow).bg(t.bg_panel),
         ));
     }
 
     // Focused entry info
     if let Some(e) = tab.cursor_entry() {
-        spans.push(Span::styled("|", Style::default().fg(Color::Rgb(41, 46, 66)).bg(Color::Rgb(31, 35, 53))));
+        spans.push(Span::styled("|", Style::default().fg(t.bg_highlight).bg(t.bg_panel)));
         let info = if e.is_dir {
             format!(" {} ", e.name)
         } else {
             format!(" {}  {} ", e.name, utils::format_size(e.size))
         };
-        spans.push(Span::styled(info, Style::default().fg(Color::Rgb(169, 177, 214)).bg(Color::Rgb(31, 35, 53))));
+        spans.push(Span::styled(info, Style::default().fg(t.fg).bg(t.bg_panel)));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::symlink_metadata(&e.path) {
+                spans.push(Span::styled(
+                    format!(" {} ", utils::format_mode(meta.permissions().mode())),
+                    Style::default().fg(t.dim).bg(t.bg_panel),
+                ));
+            }
+        }
     }
 
     // Right side: active task progress > status message > mode indicator
@@ -92,9 +105,9 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
 
     if !right_text.is_empty() {
         let right_style = if state.status.is_some() {
-            Style::default().fg(Color::Rgb(158, 206, 106)).bg(Color::Rgb(31, 35, 53))
+            Style::default().fg(t.green).bg(t.bg_panel)
         } else {
-            Style::default().fg(Color::Rgb(122, 162, 247)).bg(Color::Rgb(31, 35, 53))
+            Style::default().fg(t.accent).bg(t.bg_panel)
         };
         let left_len: usize = spans.iter().map(|s| s.content.chars().count()).sum();
         let avail = area.width as usize;
@@ -106,12 +119,12 @@ pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
             let t: String = right_text.chars().take(max).collect();
             (format!("{}~", t), 0)
         };
-        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(Color::Rgb(31, 35, 53))));
+        spans.push(Span::styled(" ".repeat(pad), Style::default().bg(t.bg_panel)));
         spans.push(Span::styled(format!(" {} ", display_text), right_style));
     }
 
     f.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().bg(Color::Rgb(31, 35, 53))),
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(t.bg_panel)),
         area,
     );
 }

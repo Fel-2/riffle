@@ -9,6 +9,7 @@ use ratatui::{
     Frame,
 };
 use crate::state::AppState;
+use crate::theme::theme;
 
 pub fn render(f: &mut Frame, state: &mut AppState) {
     let area = f.area();
@@ -95,8 +96,9 @@ pub fn render(f: &mut Frame, state: &mut AppState) {
 }
 
 fn render_confirm(f: &mut Frame, area: Rect, prompt: &str) {
+    let t = theme();
     use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
     use ratatui::layout::Alignment;
 
@@ -111,16 +113,16 @@ fn render_confirm(f: &mut Frame, area: Rect, prompt: &str) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(247, 118, 142)))
-        .style(Style::default().bg(Color::Rgb(26, 27, 38)));
+        .border_style(Style::default().fg(t.red))
+        .style(Style::default().bg(t.bg));
 
     let lines = vec![
         Line::from(Span::styled(
             prompt.to_string(),
-            Style::default().fg(Color::Rgb(192, 202, 245)).add_modifier(Modifier::BOLD),
+            Style::default().fg(t.fg_bright).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(Span::styled(hint, Style::default().fg(Color::Rgb(86, 95, 137)))),
+        Line::from(Span::styled(hint, Style::default().fg(t.dim))),
     ];
 
     let para = Paragraph::new(lines)
@@ -130,8 +132,9 @@ fn render_confirm(f: &mut Frame, area: Rect, prompt: &str) {
 }
 
 fn render_path_bar(f: &mut Frame, area: Rect, state: &AppState) {
+    let t = theme();
     use ratatui::widgets::Paragraph;
-    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::style::{Modifier, Style};
     use ratatui::text::{Line, Span};
 
     let tab = state.focused_tab();
@@ -139,33 +142,34 @@ fn render_path_bar(f: &mut Frame, area: Rect, state: &AppState) {
 
     // Tab indicators
     let mut spans: Vec<Span> = Vec::new();
-    for (i, t) in state.tabs.iter().enumerate() {
+    for (i, tb) in state.tabs.iter().enumerate() {
         let is_active = i == state.active_tab;
-        let name = t.current_dir.file_name()
+        let name = tb.current_dir.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("/");
         let style = if is_active {
-            Style::default().fg(Color::Rgb(122, 162, 247)).add_modifier(Modifier::BOLD)
+            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::Rgb(86, 95, 137))
+            Style::default().fg(t.dim)
         };
         spans.push(Span::styled(format!(" {} ", name), style));
         if i < state.tabs.len() - 1 {
-            spans.push(Span::styled("|", Style::default().fg(Color::Rgb(41, 46, 66))));
+            spans.push(Span::styled("|", Style::default().fg(t.bg_highlight)));
         }
     }
     spans.push(Span::styled("  ", Style::default()));
-    spans.push(Span::styled(path_str, Style::default().fg(Color::Rgb(169, 177, 214))));
+    spans.push(Span::styled(path_str, Style::default().fg(t.fg)));
 
     let line = Line::from(spans);
     let para = Paragraph::new(line)
-        .style(Style::default().bg(Color::Rgb(31, 35, 53)));
+        .style(Style::default().bg(t.bg_panel));
     f.render_widget(para, area);
 }
 
 fn render_input_bar(f: &mut Frame, area: Rect, state: &AppState) {
+    let t = theme();
     use ratatui::widgets::Paragraph;
-    use ratatui::style::{Color, Style};
+    use ratatui::style::Style;
     use ratatui::text::{Line, Span};
 
     let (label, content) = match state.input_mode {
@@ -191,8 +195,8 @@ fn render_input_bar(f: &mut Frame, area: Rect, state: &AppState) {
     };
 
     let line = Line::from(vec![
-        Span::styled(label, Style::default().fg(Color::Rgb(122, 162, 247)).bg(Color::Rgb(31, 35, 53))),
-        Span::styled(content, Style::default().fg(Color::Rgb(169, 177, 214)).bg(Color::Rgb(31, 35, 53))),
+        Span::styled(label, Style::default().fg(t.accent).bg(t.bg_panel)),
+        Span::styled(content, Style::default().fg(t.fg).bg(t.bg_panel)),
     ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(Color::Rgb(31, 35, 53))), area);
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(t.bg_panel)), area);
 }

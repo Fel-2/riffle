@@ -2,6 +2,9 @@
 name = "riffle"
 version = "0.1.0"
 edition = "2021"
+description = "A fast terminal file manager with image preview, tabs and git status"
+license = "MIT"
+repository = "https://codeberg.org/Fel/riffle"
 
 [dependencies]
 ratatui = "0.29"
@@ -13,6 +16,9 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico", "tga"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = true

@@ -1,0 +1,11 @@
+when:
+  - event: [push, pull_request, manual]
+
+steps:
+  check:
+    image: rust:1
+    commands:
+      - rustup component add clippy
+      - cargo clippy --all-targets -- -D warnings
+      - cargo test
+      - cargo build --release

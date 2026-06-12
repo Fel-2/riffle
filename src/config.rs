@@ -5,9 +5,11 @@ use std::path::PathBuf;
 /// All fields have sensible defaults so a missing or partial file is fine.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct Config {
     pub apps:      AppsConfig,
     pub ui:        UiConfig,
+    pub theme:     crate::theme::ThemeConfig,
     pub bookmarks: Vec<BookmarkEntry>,
 }
 
@@ -15,6 +17,7 @@ pub struct Config {
 /// Empty string means fall back to xdg-open (or $EDITOR for text).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
+#[derive(Default)]
 pub struct AppsConfig {
     /// Text editor — also overrides $EDITOR / $VISUAL.
     pub editor:   String,
@@ -55,29 +58,7 @@ pub struct BookmarkEntry {
 
 // ── Default implementations ──────────────────────────────────────────────────
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            apps:      AppsConfig::default(),
-            ui:        UiConfig::default(),
-            bookmarks: vec![],
-        }
-    }
-}
 
-impl Default for AppsConfig {
-    fn default() -> Self {
-        Self {
-            editor:   String::new(),
-            terminal: String::new(),
-            image:    String::new(),
-            video:    String::new(),
-            audio:    String::new(),
-            pdf:      String::new(),
-            archive:  String::new(),
-        }
-    }
-}
 
 impl Default for UiConfig {
     fn default() -> Self {
@@ -125,7 +106,7 @@ pub fn load() -> Config {
 
 /// The commented default config written on first run.
 fn default_config_toml() -> &'static str {
-    r#"# riffle configuration
+    r##"# riffle configuration
 # Located at ~/.config/riffle/config.toml
 #
 # All values shown are the built-in defaults.
@@ -137,7 +118,7 @@ fn default_config_toml() -> &'static str {
 editor = ""
 
 # Terminal emulator opened with 'T'.
-# Leave empty to auto-detect (kitty > alacritty > foot > xterm).
+# Leave empty to auto-detect (konsole, gnome-terminal, alacritty, kitty, xfce4-terminal, xterm).
 terminal = ""
 
 # Per-type openers. Leave empty to use xdg-open.
@@ -163,6 +144,24 @@ preview_enabled = false
 # Width (in columns) of the bookmarks/drives sidebar.
 sidebar_width = 20
 
+# [theme]
+# Override any color with "#rrggbb". Defaults are Tokyo Night.
+# bg           = "#1a1b26"   # main background
+# bg_panel     = "#1f2335"   # bars, sidebar
+# bg_highlight = "#292e42"   # cursor row, inactive borders
+# bg_selection = "#364a82"   # selected entries
+# fg           = "#a9b1d6"   # normal text
+# fg_bright    = "#c0caf5"   # emphasized text
+# dim          = "#565f89"   # hidden files, secondary info
+# muted        = "#9696b4"   # file sizes
+# accent       = "#7aa2f7"   # borders, headers, code files
+# green        = "#9ece6a"   # executables, git added, success
+# yellow       = "#e0af68"   # audio files, git modified
+# orange       = "#ff9e64"   # archives
+# red          = "#f7768e"   # git deleted, confirm modal
+# purple       = "#bb9af7"   # images
+# cyan         = "#7dcfff"   # directories
+
 # [[bookmarks]]
 # Custom bookmarks appear above the auto-detected ones.
 # name = "Projects"
@@ -171,7 +170,7 @@ sidebar_width = 20
 # [[bookmarks]]
 # name = "NAS"
 # path = "/mnt/nas"
-"#
+"##
 }
 
 // ── Helpers used by the rest of the app ──────────────────────────────────────
