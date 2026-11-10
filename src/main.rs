@@ -5,6 +5,7 @@ mod action;
 mod app;
 mod config;
 mod filesystem;
+mod imaging;
 mod input;
 mod ops;
 mod proc;

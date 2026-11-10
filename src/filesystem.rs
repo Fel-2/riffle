@@ -182,7 +182,7 @@ fn class_for_name(name: &str) -> Option<FileClass> {
 fn class_for_ext(ext: &str) -> Option<FileClass> {
     let class = match ext {
         "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "tif"
-        | "tga" | "avif" | "heic" | "qoi" => FileClass::Image,
+        | "tga" | "avif" | "heic" | "jxl" | "qoi" => FileClass::Image,
         "mp4" | "mkv" | "avi" | "mov" | "webm" | "m4v" | "flv" | "wmv" | "mpg" | "mpeg" => {
             FileClass::Video
         }
@@ -237,7 +237,7 @@ fn icon_for(name: &str, ext: &str, class: FileClass) -> &'static str {
         "md" | "markdown" | "rst" => "\u{e73e}",
         "pdf" => "\u{f1c1}",
         "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "svg" | "ico" | "tiff" | "tif"
-        | "tga" | "avif" | "heic" | "qoi" => "\u{f1c5}",
+        | "tga" | "avif" | "heic" | "jxl" | "qoi" => "\u{f1c5}",
         "mp4" | "mkv" | "avi" | "mov" | "webm" | "m4v" | "flv" | "wmv" | "mpg" | "mpeg" => {
             "\u{f1c8}"
         }
@@ -493,6 +493,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         for (name, expect) in [
             ("a.png", FileClass::Image),
+            ("a.jxl", FileClass::Image),
             ("a.pdf", FileClass::Document),
             ("a.mkv", FileClass::Video),
             ("a.flac", FileClass::Audio),

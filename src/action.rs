@@ -787,7 +787,7 @@ fn show_info(app: &mut App) {
         rows.push(("Target".to_string(), target.display().to_string()));
     }
     if entry.class == FileClass::Image {
-        if let Ok((w, h)) = image::image_dimensions(&entry.path) {
+        if let Some((w, h)) = crate::imaging::dimensions(&entry.path) {
             rows.push(("Dimensions".to_string(), format!("{w} × {h}")));
         }
     }

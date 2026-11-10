@@ -1782,7 +1782,7 @@ fn load_preview(entry: &FileEntry) -> PreviewContent {
 
     match entry.class {
         FileClass::Image => {
-            let dims = image::image_dimensions(&entry.path).ok();
+            let dims = crate::imaging::dimensions(&entry.path);
             return PreviewContent::Image {
                 dims,
                 size: entry.size,

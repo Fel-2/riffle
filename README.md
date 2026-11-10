@@ -11,8 +11,8 @@ A fast, good-looking terminal file manager written in Rust with
 - **Clean, focused layout** — breadcrumbs, sortable columns, a collapsible
   sidebar, a context-sensitive key hint bar and one-line status.
 - **Previews that work everywhere** — syntax-highlighted text, image previews
-  (kitty graphics, half-block fallback, optional chafa), directory contents,
-  binary hex dumps and file metadata.
+  (including JPEG XL; kitty graphics, half-block fallback, optional chafa),
+  directory contents, binary hex dumps and file metadata.
 - **Fast by default** — directory listings, previews and `git status` all run
   off the UI thread, so large directories and network mounts never freeze the
   interface.
@@ -71,6 +71,14 @@ git clone https://github.com/Fel-2/riffle
 cd riffle
 cargo build --release
 ./target/release/riffle
+```
+
+JPEG XL previews are decoded by the pure-Rust `jxl-oxide` crate, which makes up
+roughly 2 MB of the binary — the largest of any dependency. If you never preview
+JPEG XL files, build without it:
+
+```bash
+cargo build --release --no-default-features
 ```
 
 Prebuilt Linux binaries are attached to each

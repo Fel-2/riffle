@@ -8,15 +8,14 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
 use crate::config::ImageMode;
+use crate::imaging;
 use crate::state::{
     App, ImageKey, ImageMsg, ImagePayload, ImageRequest, PreviewContent, RenderMode,
 };
 use crate::theme::Theme;
 use crate::utils;
 
-const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_PIXELS: u64 = 25_000_000;
-const MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_KITTY_EDGE: u32 = 1920;
 
 pub fn resolved(app: &App) -> RenderMode {
@@ -146,7 +145,7 @@ fn build(key: &ImageKey) -> (Option<(u32, u32)>, ImagePayload) {
             },
         );
     };
-    if size > MAX_FILE_BYTES {
+    if size > imaging::MAX_FILE_BYTES {
         return (
             None,
             ImagePayload::Failed {
@@ -154,7 +153,7 @@ fn build(key: &ImageKey) -> (Option<(u32, u32)>, ImagePayload) {
             },
         );
     }
-    let dims = image::image_dimensions(&key.path).ok();
+    let dims = imaging::dimensions(&key.path);
     if let Some((width, height)) = dims {
         if u64::from(width) * u64::from(height) > MAX_PIXELS {
             return (
@@ -179,21 +178,8 @@ fn build(key: &ImageKey) -> (Option<(u32, u32)>, ImagePayload) {
     (dims, payload)
 }
 
-fn decode_limited(path: &Path) -> Option<image::DynamicImage> {
-    let mut reader = image::ImageReader::open(path)
-        .ok()?
-        .with_guessed_format()
-        .ok()?;
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(8000);
-    limits.max_image_height = Some(8000);
-    limits.max_alloc = Some(MAX_DECODE_BYTES);
-    reader.limits(limits);
-    reader.decode().ok()
-}
-
 fn build_blocks(key: &ImageKey) -> ImagePayload {
-    let Some(image) = decode_limited(&key.path) else {
+    let Some(image) = imaging::decode(&key.path) else {
         return ImagePayload::Failed {
             reason: "could not decode image".into(),
         };
@@ -300,7 +286,7 @@ fn blend(pixel: [u8; 4], bg_r: u8, bg_g: u8, bg_b: u8) -> (u8, u8, u8) {
 }
 
 fn build_kitty(key: &ImageKey) -> ImagePayload {
-    let Some(image) = decode_limited(&key.path) else {
+    let Some(image) = imaging::decode(&key.path) else {
         return ImagePayload::Failed {
             reason: "could not decode image".into(),
         };
