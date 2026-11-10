@@ -1,205 +1,376 @@
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// User configuration loaded from ~/.config/riffle/config.toml.
-/// All fields have sensible defaults so a missing or partial file is fine.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+use serde::{Deserialize, Serialize};
+
+use crate::filesystem::FileClass;
+use crate::theme::ThemeConfig;
+use crate::utils::DateStyle;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
 pub struct Config {
-    pub apps:      AppsConfig,
-    pub ui:        UiConfig,
-    pub theme:     crate::theme::ThemeConfig,
-    pub bookmarks: Vec<BookmarkEntry>,
+    pub apps: Apps,
+    pub ui: Ui,
+    pub behavior: Behavior,
+    pub theme: ThemeConfig,
+    pub bookmarks: Vec<Bookmark>,
 }
 
-/// Which program to use for each file category.
-/// Empty string means fall back to xdg-open (or $EDITOR for text).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
-#[derive(Default)]
-pub struct AppsConfig {
-    /// Text editor — also overrides $EDITOR / $VISUAL.
-    pub editor:   String,
-    /// Terminal emulator opened with `T`. Empty = auto-detect.
+pub struct Apps {
+    pub editor: String,
     pub terminal: String,
-    /// Image viewer. Empty = xdg-open.
-    pub image:    String,
-    /// Video player. Empty = xdg-open.
-    pub video:    String,
-    /// Audio player. Empty = xdg-open.
-    pub audio:    String,
-    /// PDF viewer. Empty = xdg-open.
-    pub pdf:      String,
-    /// Archive tool for extraction. Empty = auto-detect (tar/unzip/7z).
-    pub archive:  String,
+    pub image: String,
+    pub video: String,
+    pub audio: String,
+    pub pdf: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct UiConfig {
-    /// Show hidden files (dot-files) on startup.
-    pub show_hidden:     bool,
-    /// Sort field on startup: "name", "size", "date", "type".
-    pub sort_by:         String,
-    /// Sort ascending on startup.
-    pub sort_ascending:  bool,
-    /// Open with preview pane enabled on startup.
-    pub preview_enabled: bool,
-    /// Width in columns of the left sidebar.
-    pub sidebar_width:   u16,
+pub struct Ui {
+    pub show_hidden: bool,
+    pub sort_by: String,
+    pub sort_ascending: bool,
+    #[serde(alias = "preview_enabled")]
+    pub preview: bool,
+    pub sidebar: bool,
+    pub sidebar_width: u16,
+    pub preview_width: u16,
+    pub icons: bool,
+    pub git: bool,
+    pub mouse: bool,
+    pub date_format: DateStyleConfig,
+    pub image_mode: ImageMode,
+}
+
+impl Default for Ui {
+    fn default() -> Self {
+        Self {
+            show_hidden: false,
+            sort_by: "name".into(),
+            sort_ascending: true,
+            preview: true,
+            sidebar: true,
+            sidebar_width: 22,
+            preview_width: 45,
+            icons: true,
+            git: true,
+            mouse: true,
+            date_format: DateStyleConfig::Relative,
+            image_mode: ImageMode::Auto,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookmarkEntry {
+#[serde(default)]
+pub struct Behavior {
+    pub fuzzy: bool,
+    pub print_cwd: bool,
+    pub shell: String,
+    pub confirm_trash: bool,
+    pub double_click_ms: u64,
+}
+
+impl Default for Behavior {
+    fn default() -> Self {
+        Self {
+            fuzzy: true,
+            print_cwd: false,
+            shell: String::new(),
+            confirm_trash: false,
+            double_click_ms: 400,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ImageMode {
+    #[default]
+    Auto,
+    Kitty,
+    Blocks,
+    Chafa,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DateStyleConfig {
+    #[default]
+    Relative,
+    Iso,
+    Short,
+}
+
+impl DateStyleConfig {
+    pub fn style(self) -> DateStyle {
+        match self {
+            Self::Relative => DateStyle::Relative,
+            Self::Iso => DateStyle::Iso,
+            Self::Short => DateStyle::Short,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Bookmark {
     pub name: String,
     pub path: String,
 }
 
-// ── Default implementations ──────────────────────────────────────────────────
-
-
-
-impl Default for UiConfig {
-    fn default() -> Self {
-        Self {
-            show_hidden:     false,
-            sort_by:         "name".into(),
-            sort_ascending:  true,
-            preview_enabled: false,
-            sidebar_width:   20,
-        }
-    }
+pub struct Loaded {
+    pub config: Config,
+    pub error: Option<String>,
 }
 
-// ── Path helper ───────────────────────────────────────────────────────────────
-
-pub fn config_path() -> PathBuf {
+pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("riffle")
-        .join("config.toml")
 }
 
-// ── Load / save ───────────────────────────────────────────────────────────────
+pub fn config_path() -> PathBuf {
+    config_dir().join("config.toml")
+}
 
-/// Load config from disk, generating a default file if none exists.
-pub fn load() -> Config {
+fn non_empty_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub fn bookmarks_path() -> PathBuf {
+    config_dir().join("bookmarks.toml")
+}
+
+pub fn load() -> Loaded {
     let path = config_path();
-
     if !path.exists() {
-        // Write a commented default config so the user has a reference
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&path, default_config_toml());
-        return Config::default();
+        let _ = std::fs::write(&path, DEFAULT_CONFIG);
+        return Loaded {
+            config: Config::default(),
+            error: None,
+        };
     }
-
     let raw = match std::fs::read_to_string(&path) {
-        Ok(s) => s,
-        Err(_) => return Config::default(),
+        Ok(raw) => raw,
+        Err(err) => {
+            return Loaded {
+                config: Config::default(),
+                error: Some(format!("could not read config: {err}")),
+            }
+        }
     };
-
-    toml::from_str(&raw).unwrap_or_else(|_| Config::default())
+    match toml::from_str(&raw) {
+        Ok(config) => Loaded {
+            config,
+            error: None,
+        },
+        Err(err) => Loaded {
+            config: Config::default(),
+            error: Some(format!("config error: {err}")),
+        },
+    }
 }
 
-/// The commented default config written on first run.
-fn default_config_toml() -> &'static str {
-    r##"# riffle configuration
-# Located at ~/.config/riffle/config.toml
-#
-# All values shown are the built-in defaults.
-# Remove the leading # to activate a line.
-
-[apps]
-# Text editor used for 'e' and when opening text/code files.
-# Falls back to $EDITOR, then $VISUAL, then nvim.
-editor = ""
-
-# Terminal emulator opened with 'T'.
-# Leave empty to auto-detect (konsole, gnome-terminal, alacritty, kitty, xfce4-terminal, xterm).
-terminal = ""
-
-# Per-type openers. Leave empty to use xdg-open.
-image   = ""   # e.g. "imv", "feh", "eog"
-video   = ""   # e.g. "mpv", "vlc"
-audio   = ""   # e.g. "mpv", "cmus"
-pdf     = ""   # e.g. "zathura", "evince", "okular"
-archive = ""   # extraction tool; empty = auto (tar/unzip/7z)
-
-[ui]
-# Start with hidden files visible.
-show_hidden = false
-
-# Initial sort field: "name", "size", "date", "type"
-sort_by = "name"
-
-# Sort direction: true = ascending (A→Z, small→large).
-sort_ascending = true
-
-# Open with preview pane already visible.
-preview_enabled = false
-
-# Width (in columns) of the bookmarks/drives sidebar.
-sidebar_width = 20
-
-# [theme]
-# Override any color with "#rrggbb". Defaults are Tokyo Night.
-# bg           = "#1a1b26"   # main background
-# bg_panel     = "#1f2335"   # bars, sidebar
-# bg_highlight = "#292e42"   # cursor row, inactive borders
-# bg_selection = "#364a82"   # selected entries
-# fg           = "#a9b1d6"   # normal text
-# fg_bright    = "#c0caf5"   # emphasized text
-# dim          = "#565f89"   # hidden files, secondary info
-# muted        = "#9696b4"   # file sizes
-# accent       = "#7aa2f7"   # borders, headers, code files
-# green        = "#9ece6a"   # executables, git added, success
-# yellow       = "#e0af68"   # audio files, git modified
-# orange       = "#ff9e64"   # archives
-# red          = "#f7768e"   # git deleted, confirm modal
-# purple       = "#bb9af7"   # images
-# cyan         = "#7dcfff"   # directories
-
-# [[bookmarks]]
-# Custom bookmarks appear above the auto-detected ones.
-# name = "Projects"
-# path = "/home/user/projects"
-#
-# [[bookmarks]]
-# name = "NAS"
-# path = "/mnt/nas"
-"##
+pub fn load_persisted_bookmarks() -> Vec<Bookmark> {
+    let Ok(raw) = std::fs::read_to_string(bookmarks_path()) else {
+        return Vec::new();
+    };
+    #[derive(Deserialize, Default)]
+    struct File {
+        #[serde(default)]
+        bookmark: Vec<Bookmark>,
+    }
+    toml::from_str::<File>(&raw)
+        .map(|f| f.bookmark)
+        .unwrap_or_default()
 }
 
-// ── Helpers used by the rest of the app ──────────────────────────────────────
+pub fn save_persisted_bookmarks(bookmarks: &[Bookmark]) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct File<'a> {
+        bookmark: &'a [Bookmark],
+    }
+    let body = toml::to_string_pretty(&File {
+        bookmark: bookmarks,
+    })
+    .map_err(|e| format!("could not serialize bookmarks: {e}"))?;
+    let path = bookmarks_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, body).map_err(|e| format!("could not save bookmarks: {e}"))
+}
 
 impl Config {
-    /// Resolve the editor: config > $EDITOR > $VISUAL > nvim
     pub fn editor(&self) -> String {
-        if !self.apps.editor.is_empty() {
+        if !self.apps.editor.trim().is_empty() {
             return self.apps.editor.clone();
         }
-        std::env::var("EDITOR")
-            .or_else(|_| std::env::var("VISUAL"))
-            .unwrap_or_else(|_| "nvim".into())
+        non_empty_env("EDITOR")
+            .or_else(|| non_empty_env("VISUAL"))
+            .unwrap_or_else(|| "nvim".into())
     }
 
-    /// Resolve the opener for a given file extension.
-    /// Returns None to mean "use xdg-open".
-    pub fn opener_for_ext(&self, ext: &str) -> Option<String> {
-        let ext = ext.to_lowercase();
-        let app = match ext.as_str() {
-            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "avif" | "tiff" | "svg"
-                => &self.apps.image,
-            "mp4" | "mkv" | "avi" | "mov" | "webm" | "flv" | "wmv"
-                => &self.apps.video,
-            "mp3" | "flac" | "ogg" | "wav" | "aac" | "m4a" | "opus"
-                => &self.apps.audio,
-            "pdf" => &self.apps.pdf,
+    pub fn shell(&self) -> String {
+        if !self.behavior.shell.trim().is_empty() {
+            return self.behavior.shell.clone();
+        }
+        non_empty_env("SHELL").unwrap_or_else(|| "sh".into())
+    }
+
+    pub fn opener_for(&self, class: FileClass) -> Option<String> {
+        let app = match class {
+            FileClass::Image => &self.apps.image,
+            FileClass::Video => &self.apps.video,
+            FileClass::Audio => &self.apps.audio,
+            FileClass::Document => &self.apps.pdf,
             _ => return None,
         };
-        if app.is_empty() { None } else { Some(app.clone()) }
+        if app.trim().is_empty() {
+            None
+        } else {
+            Some(app.clone())
+        }
+    }
+
+    pub fn date_style(&self) -> DateStyle {
+        self.ui.date_format.style()
+    }
+}
+
+pub const DEFAULT_CONFIG: &str = r##"# riffle configuration
+# ~/.config/riffle/config.toml
+
+[apps]
+# Editor for `e` and for opening text files. Empty = $EDITOR / $VISUAL / nvim.
+# Arguments are allowed, e.g. "code --wait".
+editor = ""
+
+# Terminal for `T`. Empty = auto-detect.
+terminal = ""
+
+# Per-type openers. Empty = xdg-open.
+image = ""   # e.g. "imv", "feh"
+video = ""   # e.g. "mpv"
+audio = ""   # e.g. "mpv"
+pdf = ""     # e.g. "zathura"
+
+[ui]
+# Show dot-files on startup.
+show_hidden = false
+
+# "name", "size", "date" or "type".
+sort_by = "name"
+sort_ascending = true
+
+# Preview pane and sidebar. Both hide automatically on narrow terminals.
+preview = true
+sidebar = true
+sidebar_width = 22
+# Percentage of the body width used by the preview pane (25-70).
+preview_width = 45
+
+icons = true
+git = true
+mouse = true
+
+# "relative", "iso" or "short".
+date_format = "relative"
+
+# "auto", "kitty", "blocks", "chafa" or "none".
+image_mode = "auto"
+
+[behavior]
+# Fuzzy filtering. Set to false for plain substring matching.
+fuzzy = true
+
+# Print the current directory on exit (for shell integration, see README).
+print_cwd = false
+
+# Shell for `:`. Empty = $SHELL.
+shell = ""
+
+# Ask before moving files to the trash.
+confirm_trash = false
+
+double_click_ms = 400
+
+[theme]
+# Presets: tokyo-night, catppuccin, gruvbox, nord, dracula, one-dark, light.
+preset = "tokyo-night"
+
+# Use the terminal background instead of a solid color.
+transparent = false
+
+# Override individual colors with "#rrggbb" (or "reset").
+# bg        = "#1a1b26"
+# panel     = "#1f2335"
+# highlight = "#292e42"
+# selection = "#364a82"
+# fg        = "#a9b1d6"
+# bright    = "#c0caf5"
+# dim       = "#565f89"
+# muted     = "#9696b4"
+# accent    = "#7aa2f7"
+# green     = "#9ece6a"
+# yellow    = "#e0af68"
+# orange    = "#ff9e64"
+# red       = "#f7768e"
+# purple    = "#bb9af7"
+# cyan      = "#7dcfff"
+# border    = "#292e42"
+
+# Extra bookmarks (persistent bookmarks added with Ctrl+B live in bookmarks.toml).
+# [[bookmarks]]
+# name = "Projects"
+# path = "/home/user/projects"
+"##;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_config_parses() {
+        let cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        assert_eq!(cfg.ui.sidebar_width, 22);
+        assert_eq!(cfg.theme.preset.as_deref(), Some("tokyo-night"));
+    }
+
+    #[test]
+    fn partial_config_uses_defaults() {
+        let cfg: Config = toml::from_str("[ui]\nshow_hidden = true\n").unwrap();
+        assert!(cfg.ui.show_hidden);
+        assert!(cfg.ui.preview);
+        assert_eq!(cfg.ui.image_mode, ImageMode::Auto);
+    }
+
+    #[test]
+    fn old_preview_key_is_still_accepted() {
+        let cfg: Config = toml::from_str("[ui]\npreview_enabled = false\n").unwrap();
+        assert!(!cfg.ui.preview);
+    }
+
+    #[test]
+    fn broken_config_is_reported_not_panicking() {
+        let err = toml::from_str::<Config>("[ui\n").unwrap_err();
+        assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn editor_falls_back_to_env() {
+        let mut cfg = Config::default();
+        cfg.apps.editor = "hx".into();
+        assert_eq!(cfg.editor(), "hx");
     }
 }

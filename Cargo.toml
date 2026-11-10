@@ -1,10 +1,13 @@
 [package]
 name = "riffle"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "A fast terminal file manager with image preview, tabs and git status"
+description = "A fast terminal file manager with previews, tabs and git status"
 license = "MIT"
-repository = "https://codeberg.org/Fel/riffle"
+repository = "https://github.com/Fel-2/riffle"
+readme = "README.md"
+keywords = ["tui", "file-manager", "terminal", "ratatui"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 ratatui = "0.29"
@@ -15,6 +18,7 @@ dirs = "5"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+unicode-width = "0.2"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp", "tiff", "ico", "tga"] }
 
 [dev-dependencies]

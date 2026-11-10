@@ -1,136 +1,177 @@
-use std::path::PathBuf;
-use ratatui::{
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
-    Frame,
-};
-use crate::state::AppState;
-use crate::theme::theme;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::Paragraph;
+use ratatui::Frame;
 
-/// Flat, ordered list of navigable sidebar targets (bookmarks then drives).
-/// The order here must match the render order so `sidebar_cursor` lines up.
-pub fn nav_targets(state: &AppState) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = Vec::new();
+use crate::state::{App, Focus};
+use crate::theme::Theme;
+use crate::utils;
 
-    // Bookmarks
-    for (name, path) in &state.bookmarks {
-        if path.exists() {
-            out.push((name.clone(), path.clone()));
-        }
-    }
-
-    // Drives: root + mounted media
-    out.push(("/ (root)".into(), PathBuf::from("/")));
-    for base in ["/media", "/mnt", "/run/media"] {
-        let base_path = PathBuf::from(base);
-        if !base_path.exists() { continue; }
-        let search = if let Ok(user) = std::env::var("USER") {
-            let u = base_path.join(&user);
-            if u.exists() { u } else { base_path }
-        } else { base_path };
-        if let Ok(rd) = std::fs::read_dir(&search) {
-            for entry in rd.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    let mn = p.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
-                    out.push((mn, p));
-                }
-            }
-        }
-    }
-
-    out
+enum Row {
+    Header(&'static str),
+    Spacer,
+    Target(usize),
 }
 
-pub fn render(f: &mut Frame, area: Rect, state: &AppState) {
-    let t = theme();
-    let block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_style(Style::default().fg(t.bg_highlight))
-        .style(Style::default().bg(t.bg_panel));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let cur_dir = state.focused_tab().current_dir.clone();
-    let targets = nav_targets(state);
-    let focused = state.sidebar_focused;
-    let cursor = state.sidebar_cursor;
-
-    let mut y = inner.y;
-    let max_y = inner.y + inner.height;
-    let w = inner.width as usize;
-
-    macro_rules! row {
-        ($text:expr, $style:expr) => {
-            if y < max_y {
-                let s = format!("{:<width$}", $text, width = w);
-                f.render_widget(
-                    Paragraph::new(Line::from(Span::styled(s, $style))),
-                    Rect { y, height: 1, ..inner },
-                );
-                y += 1;
-            }
-        };
+pub fn render(f: &mut Frame, area: Rect, app: &mut App, theme: &Theme) {
+    if area.width < 4 || area.height == 0 {
+        return;
     }
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(theme.panel)),
+        area,
+    );
 
-    // Style for a navigable target at flat index `idx`
-    let target_style = |idx: usize, path: &PathBuf| {
-        if focused && idx == cursor {
-            Style::default().fg(t.bg_panel).bg(t.accent).add_modifier(Modifier::BOLD)
-        } else if *path == cur_dir {
-            Style::default().fg(t.accent).bg(t.bg_selection).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(t.fg).bg(t.bg_panel)
+    let targets = app.sidebar_targets();
+    let root_index = targets
+        .iter()
+        .position(|(_, path)| path == std::path::Path::new("/"));
+    let places_end = root_index.unwrap_or(targets.len());
+
+    let mut rows = vec![Row::Header("PLACES")];
+    for index in 0..places_end {
+        rows.push(Row::Target(index));
+    }
+    if root_index.is_some() {
+        rows.push(Row::Spacer);
+        rows.push(Row::Header("DEVICES"));
+        for index in places_end..targets.len() {
+            rows.push(Row::Target(index));
         }
-    };
-
-    // Split point: bookmarks are everything before the "/ (root)" entry.
-    let n_bookmarks = targets.iter().position(|(n, _)| n == "/ (root)").unwrap_or(targets.len());
-
-    // Bookmarks
-    let bm_label = if focused { " Bookmarks  [j/k Enter, Esc]" } else { " Bookmarks" };
-    row!(bm_label, Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
-    for (idx, (name, path)) in targets.iter().enumerate().take(n_bookmarks) {
-        row!(format!("  {}", name), target_style(idx, path));
     }
 
-    if y < max_y {
-        let sep = "-".repeat(w);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(t.bg_highlight)))),
-            Rect { y, height: 1, ..inner },
-        );
-        y += 1;
+    let height = area.height as usize;
+    let cursor_row = rows
+        .iter()
+        .position(|row| matches!(row, Row::Target(index) if *index == app.sidebar_cursor));
+    if let Some(cursor_row) = cursor_row {
+        if cursor_row < app.sidebar_scroll {
+            app.sidebar_scroll = cursor_row;
+        } else if cursor_row >= app.sidebar_scroll + height {
+            app.sidebar_scroll = cursor_row + 1 - height;
+        }
+    }
+    let max_scroll = rows.len().saturating_sub(height);
+    if app.sidebar_scroll > max_scroll {
+        app.sidebar_scroll = max_scroll;
     }
 
-    // Drives
-    row!(" Drives", Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
-    for (idx, (name, path)) in targets.iter().enumerate().skip(n_bookmarks) {
-        row!(format!("  {}", name), target_style(idx, path));
-    }
+    let current = app.current_dir();
+    let focused = app.focus == Focus::Sidebar;
+    let cursor = app.sidebar_cursor;
+    let width = area.width.saturating_sub(2) as usize;
 
-    if y < max_y {
-        let sep = "-".repeat(w);
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(sep, Style::default().fg(t.bg_highlight)))),
-            Rect { y, height: 1, ..inner },
-        );
-        y += 1;
-    }
-
-    // Path breadcrumbs (display only, not navigable)
-    row!(" Path", Style::default().fg(t.accent).add_modifier(Modifier::BOLD));
-    let ancestors: Vec<_> = cur_dir.ancestors().map(|p| p.to_path_buf()).collect();
-    for ancestor in ancestors.iter().rev().take(8) {
-        let name = ancestor.file_name().and_then(|n| n.to_str()).unwrap_or("/");
-        let sel = ancestor == &cur_dir;
-        let style = if sel {
-            Style::default().fg(t.accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(t.dim)
+    for (screen_row, row) in rows
+        .iter()
+        .skip(app.sidebar_scroll)
+        .take(height)
+        .enumerate()
+    {
+        let y = area.y + screen_row as u16;
+        let row_area = Rect {
+            x: area.x + 1,
+            y,
+            width: width as u16,
+            height: 1,
         };
-        row!(format!("  {}", name), style);
+        match row {
+            Row::Header(title) => {
+                let label = format!("{} ", title);
+                let used = utils::display_width(&label);
+                let mut spans = vec![Span::styled(
+                    label,
+                    Style::default()
+                        .fg(theme.dim)
+                        .bg(theme.panel)
+                        .add_modifier(Modifier::BOLD),
+                )];
+                if used < width {
+                    spans.push(Span::styled(
+                        "─".repeat(width - used),
+                        Style::default().fg(theme.border).bg(theme.panel),
+                    ));
+                }
+                f.render_widget(
+                    Paragraph::new(Line::from(spans)).style(Style::default().bg(theme.panel)),
+                    row_area,
+                );
+            }
+            Row::Spacer => {
+                f.render_widget(
+                    Paragraph::new("").style(Style::default().bg(theme.panel)),
+                    row_area,
+                );
+            }
+            Row::Target(index) => {
+                let Some((name, path)) = targets.get(*index) else {
+                    continue;
+                };
+                let is_cursor = focused && *index == cursor;
+                let is_current = *path == current;
+                let (bg, fg) = if is_cursor {
+                    (theme.highlight, theme.bright)
+                } else if is_current {
+                    (theme.panel, theme.accent)
+                } else {
+                    (theme.panel, theme.fg)
+                };
+                let icon = place_icon(name, path);
+                let label_width = width.saturating_sub(3);
+                let label = utils::truncate(name, label_width);
+                let used = utils::display_width(&label);
+                let mut spans = vec![
+                    Span::styled(
+                        format!(" {} ", icon),
+                        Style::default()
+                            .fg(if is_cursor { theme.accent } else { theme.dim })
+                            .bg(bg),
+                    ),
+                    Span::styled(
+                        label,
+                        Style::default()
+                            .fg(fg)
+                            .bg(bg)
+                            .add_modifier(if is_current || is_cursor {
+                                Modifier::BOLD
+                            } else {
+                                Modifier::empty()
+                            }),
+                    ),
+                ];
+                let padding = width.saturating_sub(3 + used);
+                if padding > 0 {
+                    spans.push(Span::styled(" ".repeat(padding), Style::default().bg(bg)));
+                }
+                f.render_widget(
+                    Paragraph::new(Line::from(spans)).style(Style::default().bg(bg)),
+                    row_area,
+                );
+                app.layout.sidebar_hits.push((
+                    Rect {
+                        x: area.x,
+                        width: area.width,
+                        height: 1,
+                        ..row_area
+                    },
+                    *index,
+                ));
+            }
+        }
+    }
+}
+
+fn place_icon(name: &str, path: &std::path::Path) -> &'static str {
+    if path == std::path::Path::new("/") {
+        return "\u{f0a0}";
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "home" => "\u{f015}",
+        "downloads" | "download" => "\u{f019}",
+        "documents" | "document" => "\u{f02d}",
+        "pictures" | "photos" => "\u{f03e}",
+        "music" => "\u{f001}",
+        "videos" | "video" => "\u{f03d}",
+        _ => "\u{f07b}",
     }
 }

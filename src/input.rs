@@ -1,738 +1,653 @@
-//! Keyboard input handling: one function per input mode, dispatched by
-//! `handle_key`. Split out of `app.rs` to keep the event loop readable.
+use crossterm::event::{
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 
-use std::path::PathBuf;
+use crate::action::{self, Action, Effect};
+use crate::state::{App, Column, Focus, Mode};
 
-use crossterm::event::{KeyCode, KeyModifiers};
-
-use crate::app::{apply_filter, focused_tab_idx, navigate_to, refresh_tab, update_preview};
-use crate::commands;
-use crate::filesystem::{sort_entries, FileType};
-use crate::state::{ActiveTask, AppState, InputMode, TabState, TaskMsg};
-
-/// What the event loop should do after a key press. Editor and shell need the
-/// terminal, so they bubble up to `run` which suspends the TUI first.
-#[derive(Debug)]
-pub enum LoopAction {
-    Continue,
-    Quit,
-    OpenEditor(PathBuf),
-    RunShell(String),
-}
-
-pub fn handle_key(state: &mut AppState, key: KeyCode, mods: KeyModifiers) -> LoopAction {
-    let ctrl = mods.contains(KeyModifiers::CONTROL);
-
-    // Global: quit (but 'q' just leaves the sidebar when it has focus)
-    if key == KeyCode::Char('q') && state.input_mode == InputMode::Normal && !ctrl && !state.sidebar_focused {
-        return LoopAction::Quit;
-    }
-
-    // Help toggle
-    if key == KeyCode::F(1) {
-        state.show_help = !state.show_help;
-        return LoopAction::Continue;
-    }
-    if state.show_help {
-        state.show_help = false;
-        return LoopAction::Continue;
-    }
-
-    match state.input_mode {
-        InputMode::Search  => { handle_search_key(state, key); LoopAction::Continue }
-        InputMode::Rename  => { handle_rename_key(state, key); LoopAction::Continue }
-        InputMode::GoTo    => { handle_goto_key(state, key); LoopAction::Continue }
-        InputMode::Shell   => handle_shell_key(state, key),
-        InputMode::Create  => { handle_create_key(state, key); LoopAction::Continue }
-        InputMode::Confirm => { handle_confirm_key(state, key); LoopAction::Continue }
-        InputMode::Normal  => handle_normal_key(state, key, ctrl),
-    }
-}
-
-fn handle_search_key(state: &mut AppState, key: KeyCode) {
-    let tab_idx = focused_tab_idx(state);
-    match key {
-        KeyCode::Esc => {
-            state.focused_tab_mut().search_query.clear();
-            apply_filter(&mut state.tabs[tab_idx]);
-            state.focused_tab_mut().cursor = 0;
-            state.input_mode = InputMode::Normal;
+pub fn handle_event(app: &mut App, event: Event) -> Effect {
+    match event {
+        Event::Key(key) => handle_key(app, key),
+        Event::Mouse(mouse) => {
+            if app.config.ui.mouse {
+                handle_mouse(app, mouse);
+            }
+            Effect::None
         }
-        KeyCode::Enter => {
-            state.input_mode = InputMode::Normal;
-        }
-        KeyCode::Backspace => {
-            state.focused_tab_mut().search_query.pop();
-            apply_filter(&mut state.tabs[tab_idx]);
-            state.tabs[tab_idx].cursor = 0;
-        }
-        KeyCode::Char(c) => {
-            state.focused_tab_mut().search_query.push(c);
-            apply_filter(&mut state.tabs[tab_idx]);
-            state.tabs[tab_idx].cursor = 0;
-        }
-        _ => {}
-    }
-}
-
-fn handle_rename_key(state: &mut AppState, key: KeyCode) {
-    let tab_idx = focused_tab_idx(state);
-    match key {
-        KeyCode::Esc => {
-            state.focused_tab_mut().renaming = None;
-            state.input_mode = InputMode::Normal;
-        }
-        KeyCode::Enter => {
-            if let Some((display_idx, new_name, _)) = state.tabs[tab_idx].renaming.take() {
-                let old_path = state.tabs[tab_idx].get_display_entry(display_idx).map(|e| e.path.clone());
-                if let Some(old) = old_path {
-                    if let Err(e) = commands::rename_file(&old, new_name.trim()) {
-                        state.set_status(format!("Rename failed: {}", e));
+        Event::Paste(text) => {
+            match app.mode {
+                Mode::Prompt => {
+                    if let Some(prompt) = &mut app.prompt {
+                        prompt.input.insert_str(&text);
+                    }
+                    action::update_filter_live(app);
+                }
+                Mode::Palette => {
+                    if let Some(palette) = &mut app.palette {
+                        palette.input.insert_str(&text);
+                        palette.refilter();
                     }
                 }
-                let show = state.show_hidden;
-                refresh_tab(&mut state.tabs[tab_idx], show, &mut state.git);
+                _ => {}
             }
-            state.input_mode = InputMode::Normal;
+            Effect::None
         }
-        KeyCode::Backspace => {
-            if let Some((_, ref mut buf, ref mut cur)) = state.focused_tab_mut().renaming {
-                if *cur > 0 {
-                    let byte = buf.char_indices().nth(*cur - 1).map(|(b, _)| b).unwrap_or(0);
-                    buf.remove(byte);
-                    *cur -= 1;
+        _ => Effect::None,
+    }
+}
+
+fn handle_key(app: &mut App, key: KeyEvent) -> Effect {
+    if key.kind == KeyEventKind::Release {
+        return Effect::None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+
+    if ctrl && key.code == KeyCode::Char('c') {
+        return match app.mode {
+            Mode::Normal => Effect::Quit,
+            Mode::Prompt => {
+                action::cancel_prompt(app);
+                Effect::None
+            }
+            Mode::Palette => {
+                app.palette = None;
+                app.mode = Mode::Normal;
+                Effect::None
+            }
+            Mode::Confirm => {
+                action::confirm_no(app);
+                Effect::None
+            }
+            Mode::Help => {
+                app.help = None;
+                app.mode = Mode::Normal;
+                Effect::None
+            }
+            Mode::Info => {
+                app.info = None;
+                app.mode = Mode::Normal;
+                Effect::None
+            }
+        };
+    }
+
+    match app.mode {
+        Mode::Prompt => return handle_prompt(app, key.code, ctrl),
+        Mode::Confirm => {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    action::confirm_yes(app);
                 }
-            }
-        }
-        KeyCode::Left => {
-            if let Some((_, _, ref mut cur)) = state.focused_tab_mut().renaming {
-                *cur = cur.saturating_sub(1);
-            }
-        }
-        KeyCode::Right => {
-            if let Some((_, ref buf, ref mut cur)) = state.focused_tab_mut().renaming {
-                *cur = (*cur + 1).min(buf.chars().count());
-            }
-        }
-        KeyCode::Home => {
-            if let Some((_, _, ref mut cur)) = state.focused_tab_mut().renaming { *cur = 0; }
-        }
-        KeyCode::End => {
-            if let Some((_, ref buf, ref mut cur)) = state.focused_tab_mut().renaming {
-                *cur = buf.chars().count();
-            }
-        }
-        KeyCode::Char(c) => {
-            if let Some((_, ref mut buf, ref mut cur)) = state.focused_tab_mut().renaming {
-                let byte = buf.char_indices().nth(*cur).map(|(b, _)| b).unwrap_or(buf.len());
-                buf.insert(byte, c);
-                *cur += 1;
-            }
-        }
-        _ => {}
-    }
-}
-
-fn handle_sidebar_key(state: &mut AppState, key: KeyCode) -> LoopAction {
-    let targets = crate::ui::sidebar::nav_targets(state);
-    let n = targets.len();
-    match key {
-        KeyCode::Char('j') | KeyCode::Down
-            if n > 0 => { state.sidebar_cursor = (state.sidebar_cursor + 1).min(n - 1); }
-        KeyCode::Char('k') | KeyCode::Up => {
-            state.sidebar_cursor = state.sidebar_cursor.saturating_sub(1);
-        }
-        KeyCode::Char('g') => { state.sidebar_cursor = 0; }
-        KeyCode::Char('G') if n > 0 => { state.sidebar_cursor = n - 1; }
-        // Jump to the selected location
-        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
-            if let Some((_, path)) = targets.get(state.sidebar_cursor).cloned() {
-                state.sidebar_focused = false;
-                navigate_to(state, path);
-            }
-        }
-        // Leave sidebar focus, back to the file list
-        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left
-        | KeyCode::Char('q') | KeyCode::Char('b') | KeyCode::Tab => {
-            state.sidebar_focused = false;
-        }
-        _ => {}
-    }
-    LoopAction::Continue
-}
-
-fn start_rename(state: &mut AppState) {
-    let cursor = state.focused_tab().cursor;
-    let name = state.focused_tab().cursor_entry().map(|e| e.name.clone());
-    if let Some(n) = name {
-        let at = rename_cursor_at_stem(&n);
-        state.focused_tab_mut().renaming = Some((cursor, n, at));
-        state.input_mode = InputMode::Rename;
-    }
-}
-
-/// Char index just before a filename's extension dot (so the stem is "selected"
-/// for quick editing); falls back to end of name for dotfiles / no extension.
-fn rename_cursor_at_stem(name: &str) -> usize {
-    match name.rfind('.') {
-        Some(dot) if dot > 0 => name[..dot].chars().count(),
-        _ => name.chars().count(),
-    }
-}
-
-fn handle_goto_key(state: &mut AppState, key: KeyCode) {
-    match key {
-        KeyCode::Esc => {
-            state.goto_buf.clear();
-            state.input_mode = InputMode::Normal;
-        }
-        KeyCode::Enter => {
-            let path = PathBuf::from(state.goto_buf.clone());
-            state.goto_buf.clear();
-            state.input_mode = InputMode::Normal;
-            navigate_to(state, path);
-        }
-        KeyCode::Backspace => { state.goto_buf.pop(); }
-        KeyCode::Char(c)   => { state.goto_buf.push(c); }
-        _ => {}
-    }
-}
-
-fn handle_shell_key(state: &mut AppState, key: KeyCode) -> LoopAction {
-    match key {
-        KeyCode::Esc => {
-            state.shell_buf.clear();
-            state.input_mode = InputMode::Normal;
-            LoopAction::Continue
-        }
-        KeyCode::Enter => {
-            let cmd = state.shell_buf.clone();
-            state.shell_buf.clear();
-            state.input_mode = InputMode::Normal;
-            if !cmd.is_empty() {
-                LoopAction::RunShell(cmd)
-            } else {
-                LoopAction::Continue
-            }
-        }
-        KeyCode::Backspace => { state.shell_buf.pop(); LoopAction::Continue }
-        KeyCode::Char(c)   => { state.shell_buf.push(c); LoopAction::Continue }
-        _ => LoopAction::Continue
-    }
-}
-
-fn handle_create_key(state: &mut AppState, key: KeyCode) {
-    let show = state.show_hidden;
-    match key {
-        KeyCode::Esc => {
-            state.create_buf.clear();
-            state.input_mode = InputMode::Normal;
-        }
-        KeyCode::Enter => {
-            let name = state.create_buf.trim().to_string();
-            state.create_buf.clear();
-            state.input_mode = InputMode::Normal;
-            if name.is_empty() { return; }
-            let dir = state.focused_tab().current_dir.clone();
-            let res = if state.create_is_dir {
-                commands::create_directory(&dir, &name).map(|_| ())
-            } else {
-                commands::create_file(&dir, &name).map(|_| ())
-            };
-            let tab_idx = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx], show, &mut state.git);
-            match res {
-                Ok(_) => state.set_status(format!("Created '{}'", name)),
-                Err(e) => state.set_status(format!("Create failed: {}", e)),
-            }
-        }
-        KeyCode::Backspace => { state.create_buf.pop(); }
-        KeyCode::Char(c)   => { state.create_buf.push(c); }
-        _ => {}
-    }
-}
-
-fn handle_confirm_key(state: &mut AppState, key: KeyCode) {
-    let show = state.show_hidden;
-    match key {
-        KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
-            if let Some((_, action)) = state.confirm.take() {
-                match action {
-                    crate::state::ConfirmAction::DeletePermanent(paths) => {
-                        let n = paths.len();
-                        let mut errs = 0;
-                        for p in &paths {
-                            if commands::delete_file(p).is_err() { errs += 1; }
-                        }
-                        state.focused_tab_mut().selection.clear();
-                        let tab_idx = focused_tab_idx(state);
-                        refresh_tab(&mut state.tabs[tab_idx], show, &mut state.git);
-                        update_preview(state);
-                        if errs == 0 {
-                            state.set_status(format!("Deleted {} item(s)", n));
-                        } else {
-                            state.set_status(format!("Deleted {}/{} — {} failed", n - errs, n, errs));
-                        }
-                    }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    action::confirm_no(app);
                 }
+                _ => {}
             }
-            state.input_mode = InputMode::Normal;
+            return Effect::None;
         }
-        _ => {
-            // Anything else cancels — safe default
-            state.confirm = None;
-            state.input_mode = InputMode::Normal;
-            state.set_status("Cancelled");
+        Mode::Palette => return handle_palette(app, key.code, ctrl),
+        Mode::Help => {
+            handle_help(app, key.code);
+            return Effect::None;
         }
+        Mode::Info => {
+            handle_info(app, key.code);
+            return Effect::None;
+        }
+        Mode::Normal => {}
     }
-}
 
-/// Move selection (or cursor entry) to trash, surfacing any failures.
-/// Records the original→trashed paths so the batch can be undone with Ctrl+Z.
-fn trash_selection(state: &mut AppState, show: bool) {
-    let paths = selected_or_cursor(state);
-    let n = paths.len();
-    if n == 0 { return; }
-    let mut ok = 0;
-    let mut last_err = String::new();
-    let mut batch: Vec<(PathBuf, PathBuf)> = Vec::new();
-    for p in &paths {
-        match commands::trash_file(p) {
-            Ok(dest) => { ok += 1; batch.push((p.clone(), dest)); }
-            Err(e) => last_err = e,
-        }
+    if app.task.is_some() && key.code == KeyCode::Esc {
+        action::task_cancelled(app);
+        app.set_info("Cancelling…");
+        return Effect::None;
     }
-    if !batch.is_empty() { state.trash_undo.push(batch); }
-    state.focused_tab_mut().selection.clear();
-    let tab_idx = focused_tab_idx(state);
-    refresh_tab(&mut state.tabs[tab_idx], show, &mut state.git);
-    update_preview(state);
-    if ok == n {
-        state.set_status(format!("Trashed {} item(s) — Ctrl+Z to undo", n));
-    } else {
-        state.set_status(format!("Trashed {}/{} — {}", ok, n, last_err));
-    }
-}
 
-/// Restore the most recent trash batch from the trash back to its origin.
-fn undo_trash(state: &mut AppState, show: bool) {
-    let Some(batch) = state.trash_undo.pop() else {
-        state.set_status("Nothing to undo");
-        return;
+    if key.code == KeyCode::F(1) || key.code == KeyCode::Char('?') {
+        return action::dispatch(app, Action::Help);
+    }
+
+    if app.focus == Focus::Sidebar {
+        return handle_sidebar(app, key.code);
+    }
+    if app.focus == Focus::Preview {
+        return handle_preview(app, key.code);
+    }
+
+    if ctrl {
+        return match key.code {
+            KeyCode::Char('p') => action::dispatch(app, Action::Palette),
+            KeyCode::Char('t') => action::dispatch(app, Action::NewTab),
+            KeyCode::Char('w') => action::dispatch(app, Action::ToggleDual),
+            KeyCode::Char('b') => action::dispatch(app, Action::Bookmark),
+            KeyCode::Char('g') => action::dispatch(app, Action::GoTo),
+            KeyCode::Char('z') => action::dispatch(app, Action::Undo),
+            KeyCode::Char('d') => action::dispatch(app, Action::PageDown),
+            KeyCode::Char('u') => action::dispatch(app, Action::PageUp),
+            _ => Effect::None,
+        };
+    }
+
+    if alt && key.code == KeyCode::Left {
+        return action::dispatch(app, Action::Back);
+    }
+    if alt && key.code == KeyCode::Right {
+        return action::dispatch(app, Action::Forward);
+    }
+    if alt && key.code == KeyCode::Up {
+        return action::dispatch(app, Action::Parent);
+    }
+
+    if let KeyCode::Char(digit @ '1'..='9') = key.code {
+        let index = digit as usize - '1' as usize;
+        if index < app.tabs.len() {
+            switch_tab(app, index);
+        }
+        return Effect::None;
+    }
+
+    let action = match key.code {
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('j') | KeyCode::Down => Action::MoveDown,
+        KeyCode::Char('k') | KeyCode::Up => Action::MoveUp,
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => Action::Parent,
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => Action::Open,
+        KeyCode::Char('g') | KeyCode::Home => Action::Top,
+        KeyCode::Char('G') | KeyCode::End => Action::Bottom,
+        KeyCode::PageDown => Action::PageDown,
+        KeyCode::PageUp => Action::PageUp,
+        KeyCode::Char(' ') => Action::Select,
+        KeyCode::Char('V') => Action::SelectAll,
+        KeyCode::Esc => Action::ClearSelection,
+        KeyCode::Char('y') => Action::Copy,
+        KeyCode::Char('x') => Action::Cut,
+        KeyCode::Char('p') => Action::Paste,
+        KeyCode::Char('d') | KeyCode::Delete => Action::Trash,
+        KeyCode::Char('D') => Action::Delete,
+        KeyCode::Char('r') | KeyCode::F(2) => Action::Rename,
+        KeyCode::Char('a') => Action::NewFile,
+        KeyCode::Char('A') => Action::NewDir,
+        KeyCode::Char('e') => Action::Edit,
+        KeyCode::Char('i') => Action::Info,
+        KeyCode::Char('Y') => Action::CopyPath,
+        KeyCode::Char('T') => Action::OpenTerminal,
+        KeyCode::Char('E') => Action::Extract,
+        KeyCode::Char('Z') => Action::Compress,
+        KeyCode::Char('K') => Action::Share,
+        KeyCode::Char('/') => Action::Filter,
+        KeyCode::Char(':') => Action::Shell,
+        KeyCode::Char('~') => Action::Home,
+        KeyCode::Char('R') | KeyCode::F(5) => Action::Refresh,
+        KeyCode::Char('.') => Action::ToggleHidden,
+        KeyCode::Char('P') => Action::TogglePreview,
+        KeyCode::Char('B') => Action::ToggleSidebar,
+        KeyCode::Char('b') => Action::FocusSidebar,
+        KeyCode::Char('s') => Action::SortNext,
+        KeyCode::Char('S') => Action::SortOrder,
+        KeyCode::Char('X') => Action::CloseTab,
+        KeyCode::Char(']') => Action::NextTab,
+        KeyCode::Char('[') => Action::PrevTab,
+        KeyCode::Char('-') => Action::Back,
+        KeyCode::Tab => {
+            if app.dual {
+                Action::SwitchPane
+            } else {
+                app.focus_next(shift);
+                return Effect::None;
+            }
+        }
+        KeyCode::BackTab => {
+            app.focus_next(true);
+            return Effect::None;
+        }
+        _ => return Effect::None,
     };
-    let n = batch.len();
-    let mut ok = 0;
-    let mut last_err = String::new();
-    for (orig, trashed) in &batch {
-        match commands::move_file(trashed, orig) {
-            Ok(_) => ok += 1,
-            Err(e) => last_err = e,
+    action::dispatch(app, action)
+}
+
+fn handle_prompt(app: &mut App, code: KeyCode, ctrl: bool) -> Effect {
+    if app.prompt.is_none() {
+        app.mode = Mode::Normal;
+        return Effect::None;
+    }
+    let mut close = false;
+    let mut submit = false;
+    let mut nav = 0i32;
+    {
+        let prompt = app.prompt.as_mut().unwrap();
+        if ctrl {
+            match code {
+                KeyCode::Char('a') => prompt.input.select_all(),
+                KeyCode::Char('u') => prompt.input.kill_to_start(),
+                KeyCode::Char('k') => prompt.input.kill_to_end(),
+                KeyCode::Char('w') => prompt.input.backspace_word(),
+                KeyCode::Char('e') => prompt.input.end(),
+                KeyCode::Left => prompt.input.word_left(),
+                KeyCode::Right => prompt.input.word_right(),
+                _ => {}
+            }
+        } else {
+            match code {
+                KeyCode::Esc => close = true,
+                KeyCode::Enter => submit = true,
+                KeyCode::Up => nav = -1,
+                KeyCode::Down => nav = 1,
+                KeyCode::Backspace => prompt.input.backspace(),
+                KeyCode::Delete => prompt.input.delete(),
+                KeyCode::Left => prompt.input.left(),
+                KeyCode::Right => prompt.input.right(),
+                KeyCode::Home => prompt.input.home(),
+                KeyCode::End => prompt.input.end(),
+                KeyCode::Char(ch) => prompt.input.insert_char(ch),
+                _ => {}
+            }
         }
     }
-    let tab_idx = focused_tab_idx(state);
-    refresh_tab(&mut state.tabs[tab_idx], show, &mut state.git);
-    update_preview(state);
-    if ok == n {
-        state.set_status(format!("Restored {} item(s)", n));
-    } else {
-        state.set_status(format!("Restored {}/{} — {}", ok, n, last_err));
+    if close {
+        action::cancel_prompt(app);
+        return Effect::None;
+    }
+    if submit {
+        return action::submit_prompt(app);
+    }
+    if nav != 0 {
+        let action = if nav > 0 {
+            Action::MoveDown
+        } else {
+            Action::MoveUp
+        };
+        return action::dispatch(app, action);
+    }
+    action::update_filter_live(app);
+    Effect::None
+}
+
+fn handle_palette(app: &mut App, code: KeyCode, ctrl: bool) -> Effect {
+    if app.palette.is_none() {
+        app.mode = Mode::Normal;
+        return Effect::None;
+    }
+    let mut close = false;
+    let mut run = None;
+    {
+        let palette = app.palette.as_mut().unwrap();
+        if ctrl {
+            match code {
+                KeyCode::Char('a') => palette.input.select_all(),
+                KeyCode::Char('u') => palette.input.kill_to_start(),
+                KeyCode::Char('w') => palette.input.backspace_word(),
+                _ => {}
+            }
+            palette.refilter();
+            return Effect::None;
+        }
+        match code {
+            KeyCode::Esc => close = true,
+            KeyCode::Enter => {
+                run = palette.selected();
+                close = true;
+            }
+            KeyCode::Up => {
+                palette.cursor = palette.cursor.saturating_sub(1);
+                if palette.cursor < palette.scroll {
+                    palette.scroll = palette.cursor;
+                }
+            }
+            KeyCode::Down => {
+                if !palette.filtered.is_empty() {
+                    palette.cursor = (palette.cursor + 1).min(palette.filtered.len() - 1);
+                }
+            }
+            KeyCode::PageUp => palette.cursor = palette.cursor.saturating_sub(10),
+            KeyCode::PageDown => {
+                if !palette.filtered.is_empty() {
+                    palette.cursor = (palette.cursor + 10).min(palette.filtered.len() - 1);
+                }
+            }
+            KeyCode::Backspace => {
+                palette.input.backspace();
+                palette.refilter();
+            }
+            KeyCode::Delete => {
+                palette.input.delete();
+                palette.refilter();
+            }
+            KeyCode::Left => palette.input.left(),
+            KeyCode::Right => palette.input.right(),
+            KeyCode::Home => palette.input.home(),
+            KeyCode::End => palette.input.end(),
+            KeyCode::Char(ch) => {
+                palette.input.insert_char(ch);
+                palette.refilter();
+            }
+            _ => {}
+        }
+    }
+    if close {
+        app.palette = None;
+        app.mode = Mode::Normal;
+        if let Some(action) = run {
+            return action::dispatch(app, action);
+        }
+    }
+    Effect::None
+}
+
+fn handle_help(app: &mut App, code: KeyCode) {
+    if app.help.is_none() {
+        app.mode = Mode::Normal;
+        return;
+    }
+    let mut close = false;
+    {
+        let help = app.help.as_mut().unwrap();
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::F(1) => close = true,
+            KeyCode::Char('j') | KeyCode::Down => help.scroll = help.scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => help.scroll = help.scroll.saturating_sub(1),
+            KeyCode::PageDown => help.scroll = help.scroll.saturating_add(10),
+            KeyCode::PageUp => help.scroll = help.scroll.saturating_sub(10),
+            KeyCode::Char('g') | KeyCode::Home => help.scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => help.scroll = usize::MAX,
+            _ => {}
+        }
+    }
+    if close {
+        app.help = None;
+        app.mode = Mode::Normal;
     }
 }
 
-fn handle_normal_key(state: &mut AppState, key: KeyCode, ctrl: bool) -> LoopAction {
-    let show = state.show_hidden;
-    let tab_idx = focused_tab_idx(state);
-
-    // When the sidebar holds focus, all normal keys drive it instead
-    if state.sidebar_focused {
-        return handle_sidebar_key(state, key);
+fn handle_info(app: &mut App, code: KeyCode) {
+    if app.info.is_none() {
+        app.mode = Mode::Normal;
+        return;
     }
+    let mut close = false;
+    {
+        let info = app.info.as_mut().unwrap();
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('i') | KeyCode::Enter => close = true,
+            KeyCode::Char('j') | KeyCode::Down => info.scroll = info.scroll.saturating_add(1),
+            KeyCode::Char('k') | KeyCode::Up => info.scroll = info.scroll.saturating_sub(1),
+            KeyCode::PageDown => info.scroll = info.scroll.saturating_add(10),
+            KeyCode::PageUp => info.scroll = info.scroll.saturating_sub(10),
+            KeyCode::Char('g') | KeyCode::Home => info.scroll = 0,
+            KeyCode::Char('G') | KeyCode::End => info.scroll = usize::MAX,
+            _ => {}
+        }
+    }
+    if close {
+        app.info = None;
+        app.mode = Mode::Normal;
+    }
+}
 
-    match key {
-        // Navigation
-        KeyCode::Char('j') | KeyCode::Down  => {
-            state.update_cursor(1);
-            update_preview(state);
+fn handle_sidebar(app: &mut App, code: KeyCode) -> Effect {
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => action::dispatch(app, Action::SidebarDown),
+        KeyCode::Char('k') | KeyCode::Up => action::dispatch(app, Action::SidebarUp),
+        KeyCode::Char('g') | KeyCode::Home => action::dispatch(app, Action::SidebarTop),
+        KeyCode::Char('G') | KeyCode::End => action::dispatch(app, Action::SidebarBottom),
+        KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
+            action::dispatch(app, Action::SidebarOpen)
         }
-        KeyCode::Char('k') | KeyCode::Up    => {
-            state.update_cursor(-1);
-            update_preview(state);
+        KeyCode::Esc | KeyCode::Char('h') | KeyCode::Left | KeyCode::Char('b') => {
+            app.focus = Focus::Files;
+            Effect::None
         }
-        KeyCode::Char('g') if !ctrl => {
-            state.focused_tab_mut().cursor = 0;
-            update_preview(state);
+        KeyCode::Tab => {
+            app.focus_next(false);
+            Effect::None
         }
-        KeyCode::Char('G') => {
-            let len = state.focused_tab().display_count();
-            if len > 0 { state.focused_tab_mut().cursor = len - 1; }
-            update_preview(state);
+        KeyCode::BackTab => {
+            app.focus_next(true);
+            Effect::None
         }
-        KeyCode::PageDown => {
-            state.update_cursor(20);
-            update_preview(state);
-        }
-        KeyCode::PageUp   => {
-            state.update_cursor(-20);
-            update_preview(state);
-        }
+        KeyCode::Char('q') => Effect::Quit,
+        _ => Effect::None,
+    }
+}
 
-        // Enter directory / open file
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter => {
-            let entry = state.focused_tab().cursor_entry().map(|e| (e.path.clone(), e.is_dir));
-            if let Some((path, is_dir)) = entry {
-                if is_dir {
-                    navigate_to(state, path);
-                } else if commands::wants_editor(&path) {
-                    // Editor needs the real terminal — must suspend the TUI
-                    return LoopAction::OpenEditor(path);
-                } else if let Err(e) = commands::open_file(&path, &state.config) {
-                    state.set_status(format!("Open failed: {}", e));
-                }
-            }
-        }
-
-        // Open in editor (always)
-        KeyCode::Char('e') if !ctrl => {
-            let entry = state.focused_tab().cursor_entry().map(|e| (e.path.clone(), e.is_dir));
-            if let Some((path, is_dir)) = entry {
-                if !is_dir {
-                    return LoopAction::OpenEditor(path);
-                }
-            }
-        }
-
-        // Go up
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Backspace => {
-            let parent = state.focused_tab().current_dir.parent().map(|p| p.to_path_buf());
-            if let Some(p) = parent { navigate_to(state, p); }
-        }
-
-        // Search
-        KeyCode::Char('/') => {
-            state.input_mode = InputMode::Search;
-        }
-
-        // Shell command
-        KeyCode::Char(':') => {
-            state.shell_buf.clear();
-            state.input_mode = InputMode::Shell;
-        }
-
-        // Go to path (Ctrl+G)
-        KeyCode::Char('g') if ctrl => {
-            state.goto_buf = state.focused_tab().current_dir.to_string_lossy().to_string();
-            state.input_mode = InputMode::GoTo;
-        }
-
-        // Escape: clear selection/search
+fn handle_preview(app: &mut App, code: KeyCode) -> Effect {
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => action::dispatch(app, Action::PreviewDown),
+        KeyCode::Char('k') | KeyCode::Up => action::dispatch(app, Action::PreviewUp),
+        KeyCode::PageDown => action::dispatch(app, Action::PreviewPageDown),
+        KeyCode::PageUp => action::dispatch(app, Action::PreviewPageUp),
+        KeyCode::Char('g') | KeyCode::Home => action::dispatch(app, Action::PreviewTop),
+        KeyCode::Char('G') | KeyCode::End => action::dispatch(app, Action::PreviewBottom),
+        KeyCode::Char('h') | KeyCode::Left => action::dispatch(app, Action::PreviewLeft),
+        KeyCode::Char('l') | KeyCode::Right => action::dispatch(app, Action::PreviewRight),
         KeyCode::Esc => {
-            state.focused_tab_mut().selection.clear();
-            let tab_idx2 = focused_tab_idx(state);
-            if !state.focused_tab().search_query.is_empty() {
-                state.focused_tab_mut().search_query.clear();
-                apply_filter(&mut state.tabs[tab_idx2]);
-            }
+            app.focus = Focus::Files;
+            Effect::None
         }
-
-        // Select
-        KeyCode::Char(' ') => {
-            let path = state.focused_tab().cursor_entry().map(|e| e.path.clone());
-            if let Some(p) = path {
-                state.focused_tab_mut().toggle_selection(p);
-                state.update_cursor(1);
-            }
+        KeyCode::Tab => {
+            app.focus_next(false);
+            Effect::None
         }
-
-        // Yank / Cut / Paste
-        KeyCode::Char('y') if !ctrl => {
-            let paths = selected_or_cursor(state);
-            let n = paths.len();
-            if !paths.is_empty() {
-                state.clipboard = Some((paths, false));
-                state.set_status(format!("Yanked {} item(s)", n));
-            }
+        KeyCode::BackTab => {
+            app.focus_next(true);
+            Effect::None
         }
-        KeyCode::Char('x') if !ctrl => {
-            let paths = selected_or_cursor(state);
-            let n = paths.len();
-            if !paths.is_empty() {
-                state.clipboard = Some((paths, true));
-                state.set_status(format!("Cut {} item(s)", n));
-            }
-        }
-        KeyCode::Char('p') if !ctrl => {
-            if state.task.is_some() {
-                state.set_status("Busy — another operation is running");
-            } else if let Some((paths, is_cut)) = state.clipboard.clone() {
-                let dest = state.focused_tab().current_dir.clone();
-                let (tx, rx) = std::sync::mpsc::channel();
-                let total = paths.len();
-                let label = if is_cut { "Moving" } else { "Copying" };
-
-                // Worker thread: copy/move each item, report progress, never block UI
-                std::thread::spawn(move || {
-                    let mut ok = 0usize;
-                    let mut first_err: Option<String> = None;
-                    for (i, path) in paths.iter().enumerate() {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                        let _ = tx.send(TaskMsg::Progress { done: i, total, current: name.clone() });
-                        let d = commands::unique_dest(&dest, path.file_name().unwrap_or_default());
-                        let res = if is_cut {
-                            commands::move_file(path, &d)
-                        } else {
-                            commands::copy_file(path, &d)
-                        };
-                        match res {
-                            Ok(_) => ok += 1,
-                            Err(e) => if first_err.is_none() {
-                                first_err = Some(format!("{}: {}", name, e));
-                            }
-                        }
-                    }
-                    let _ = tx.send(TaskMsg::Done { ok, total, first_err });
-                });
-
-                if is_cut { state.clipboard = None; }
-                state.focused_tab_mut().selection.clear();
-                state.task = Some(ActiveTask { rx, label, done: 0, total, current: String::new() });
-            }
-        }
-
-        // Trash (recoverable) — safe default, like Dolphin's Delete key
-        KeyCode::Char('d') | KeyCode::Delete if !ctrl => {
-            trash_selection(state, show);
-        }
-
-        // Permanent delete — requires confirmation modal
-        KeyCode::Char('D') => {
-            let paths = selected_or_cursor(state);
-            if !paths.is_empty() {
-                let prompt = if paths.len() == 1 {
-                    format!("Permanently delete '{}'?", paths[0].file_name().unwrap_or_default().to_string_lossy())
-                } else {
-                    format!("Permanently delete {} items?", paths.len())
-                };
-                state.confirm = Some((prompt, crate::state::ConfirmAction::DeletePermanent(paths)));
-                state.input_mode = InputMode::Confirm;
-            }
-        }
-
-        // Rename
-        KeyCode::Char('r') if !ctrl => { start_rename(state); }
-        KeyCode::F(2) => { start_rename(state); }
-
-        // Create file — prompt for name
-        KeyCode::Char('a') if !ctrl => {
-            state.create_buf.clear();
-            state.create_is_dir = false;
-            state.input_mode = InputMode::Create;
-        }
-        // Create directory — prompt for name
-        KeyCode::Char('A') => {
-            state.create_buf.clear();
-            state.create_is_dir = true;
-            state.input_mode = InputMode::Create;
-        }
-
-        // Toggle hidden
-        KeyCode::Char('.') => {
-            state.show_hidden = !state.show_hidden;
-            let sh = state.show_hidden;
-            for tab in &mut state.tabs { refresh_tab(tab, sh, &mut state.git); }
-            update_preview(state);
-        }
-
-        // Refresh
-        KeyCode::F(5) => {
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show, &mut state.git);
-            update_preview(state);
-        }
-        KeyCode::Char('R') => {
-            let tab_idx2 = focused_tab_idx(state);
-            refresh_tab(&mut state.tabs[tab_idx2], show, &mut state.git);
-            update_preview(state);
-        }
-
-        // Toggle preview pane
-        KeyCode::Char('P') => {
-            state.preview_enabled = !state.preview_enabled;
-            update_preview(state);
-        }
-
-        // Extract archive
-        KeyCode::Char('E') => {
-            let entry = state.focused_tab().cursor_entry().map(|e| (e.path.clone(), e.is_dir, e.file_type.clone()));
-            if let Some((path, is_dir, ft)) = entry {
-                if !is_dir && ft == FileType::Archive {
-                    match commands::extract_archive(&path) {
-                        Ok(_) => state.set_status("Archive extracted"),
-                        Err(e) => state.set_status(format!("Extract failed: {}", e)),
-                    }
-                    let tab_idx2 = focused_tab_idx(state);
-                    refresh_tab(&mut state.tabs[tab_idx2], show, &mut state.git);
-                } else {
-                    state.set_status("Not an archive file");
-                }
-            }
-        }
-
-        // Compress to zip (tar.gz fallback)
-        KeyCode::Char('Z') => {
-            let entry = state.focused_tab().cursor_entry().map(|e| e.path.clone());
-            if let Some(path) = entry {
-                match commands::compress_zip(&path) {
-                    Ok(_) => state.set_status("Compressed"),
-                    Err(e) => state.set_status(format!("Compress failed: {}", e)),
-                }
-                let tab_idx2 = focused_tab_idx(state);
-                refresh_tab(&mut state.tabs[tab_idx2], show, &mut state.git);
-            }
-        }
-
-        // Dual pane (Ctrl+W)
-        KeyCode::Char('w') if ctrl => {
-            if state.dual_pane {
-                state.dual_pane = false;
-                state.right_focused = false;
-            } else {
-                let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-                let mut t = TabState::new(home);
-                refresh_tab(&mut t, show, &mut state.git);
-                state.tabs.push(t);
-                state.right_tab = state.tabs.len() - 1;
-                state.dual_pane = true;
-                state.right_focused = true;
-            }
-        }
-
-        // Switch pane
-        KeyCode::Tab if state.dual_pane => {
-            state.right_focused = !state.right_focused;
-        }
-
-        // Cycle tabs: [ prev, ] next
-        KeyCode::Char('[') if !ctrl
-            && state.tabs.len() > 1 => {
-                state.active_tab = if state.active_tab == 0 {
-                    state.tabs.len() - 1
-                } else {
-                    state.active_tab - 1
-                };
-                update_preview(state);
-            }
-        KeyCode::Char(']') if !ctrl
-            && state.tabs.len() > 1 => {
-                state.active_tab = (state.active_tab + 1) % state.tabs.len();
-                update_preview(state);
-            }
-
-        // Close tab (X)
-        KeyCode::Char('X') => {
-            if state.tabs.len() > 1 {
-                state.tabs.remove(tab_idx);
-                if state.active_tab >= state.tabs.len() {
-                    state.active_tab = state.tabs.len() - 1;
-                }
-                // Fix right_tab if it refers to a removed index
-                if state.right_tab >= state.tabs.len() {
-                    state.right_tab = state.tabs.len() - 1;
-                }
-                update_preview(state);
-                state.set_status("Tab closed");
-            } else {
-                state.set_status("Cannot close last tab");
-            }
-        }
-
-        // New tab (Ctrl+T)
-        KeyCode::Char('t') if ctrl => {
-            let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-            let mut t = TabState::new(home);
-            refresh_tab(&mut t, show, &mut state.git);
-            state.tabs.push(t);
-            state.active_tab = state.tabs.len() - 1;
-            update_preview(state);
-        }
-
-        // Sort cycle
-        KeyCode::Char('s') if !ctrl => {
-            use crate::state::SortBy::*;
-            let tab_idx2 = focused_tab_idx(state);
-            let tab = &mut state.tabs[tab_idx2];
-            tab.sort_by = match tab.sort_by { Name => Size, Size => Date, Date => Type, Type => Name };
-            sort_entries(&mut tab.entries, tab.sort_by, tab.sort_ascending);
-            apply_filter(tab);
-        }
-
-        // Sort order toggle
-        KeyCode::Char('S') => {
-            let tab_idx2 = focused_tab_idx(state);
-            let tab = &mut state.tabs[tab_idx2];
-            tab.sort_ascending = !tab.sort_ascending;
-            sort_entries(&mut tab.entries, tab.sort_by, tab.sort_ascending);
-            apply_filter(tab);
-        }
-
-        // Open terminal
-        KeyCode::Char('T') => {
-            let dir = state.focused_tab().current_dir.clone();
-            if let Err(e) = commands::open_terminal(&dir, &state.config) {
-                state.set_status(format!("Terminal: {}", e));
-            }
-        }
-
-        // Share via KDE Connect
-        KeyCode::Char('K') => {
-            let paths = selected_or_cursor(state);
-            match commands::share_kdeconnect(&paths) {
-                Ok(msg) => state.set_status(msg),
-                Err(e)  => state.set_status(format!("KDE Connect: {}", e)),
-            }
-        }
-
-        // Help
-        KeyCode::Char('?') => { state.show_help = true; }
-
-        // Undo last trash (Ctrl+Z)
-        KeyCode::Char('z') if ctrl => {
-            undo_trash(state, show);
-        }
-
-        // Focus the sidebar (bookmarks / drives)
-        KeyCode::Char('b') if !ctrl => {
-            let targets = crate::ui::sidebar::nav_targets(state);
-            if !targets.is_empty() {
-                let cur = state.focused_tab().current_dir.clone();
-                state.sidebar_cursor = targets.iter().position(|(_, p)| *p == cur).unwrap_or(0);
-                state.sidebar_focused = true;
-            }
-        }
-
-        // Bookmark current dir (Ctrl+B)
-        KeyCode::Char('b') if ctrl => {
-            let cur = state.focused_tab().current_dir.clone();
-            let name = cur.file_name().and_then(|n| n.to_str()).unwrap_or("bm").to_string();
-            if !state.bookmarks.iter().any(|(_, p)| p == &cur) {
-                state.bookmarks.push((name, cur));
-                state.set_status("Bookmark added");
-            }
-        }
-
-        _ => {}
+        KeyCode::Char('q') => Effect::Quit,
+        _ => Effect::None,
     }
-
-    // Suppress unused variable warning for tab_idx
-    let _ = tab_idx;
-
-    LoopAction::Continue
 }
 
-fn selected_or_cursor(state: &AppState) -> Vec<PathBuf> {
-    let tab = state.focused_tab();
-    if tab.selection.is_empty() {
-        tab.cursor_entry().map(|e| vec![e.path.clone()]).unwrap_or_default()
-    } else {
-        tab.selection.iter().cloned().collect()
+fn switch_tab(app: &mut App, index: usize) {
+    if index >= app.tabs.len() {
+        return;
     }
+    app.tab = index;
+    app.focus = Focus::Files;
+    let tab = app.tab;
+    app.load_tab_panes(tab);
+    app.request_preview();
+}
+
+fn handle_mouse(app: &mut App, mouse: MouseEvent) {
+    match app.mode {
+        Mode::Help => {
+            if let Some(help) = &mut app.help {
+                match mouse.kind {
+                    MouseEventKind::ScrollDown => help.scroll = help.scroll.saturating_add(3),
+                    MouseEventKind::ScrollUp => help.scroll = help.scroll.saturating_sub(3),
+                    _ => {}
+                }
+            }
+            return;
+        }
+        Mode::Info => {
+            if let Some(info) = &mut app.info {
+                match mouse.kind {
+                    MouseEventKind::ScrollDown => info.scroll = info.scroll.saturating_add(3),
+                    MouseEventKind::ScrollUp => info.scroll = info.scroll.saturating_sub(3),
+                    _ => {}
+                }
+            }
+            return;
+        }
+        Mode::Prompt | Mode::Palette | Mode::Confirm => return,
+        Mode::Normal => {}
+    }
+
+    let column = mouse.column;
+    let row = mouse.row;
+    let preview_rect = app.layout.preview;
+    let sidebar_rect = app.layout.sidebar;
+
+    if matches!(
+        mouse.kind,
+        MouseEventKind::ScrollDown | MouseEventKind::ScrollUp
+    ) {
+        let delta = if mouse.kind == MouseEventKind::ScrollDown {
+            3
+        } else {
+            -3
+        };
+        if preview_rect.is_some_and(|rect| rect_contains(rect, column, row)) {
+            app.focus = Focus::Preview;
+            if delta > 0 {
+                app.preview_scroll = app.preview_scroll.saturating_add(delta as usize);
+            } else {
+                app.preview_scroll = app.preview_scroll.saturating_sub((-delta) as usize);
+            }
+            return;
+        }
+        if sidebar_rect.is_some_and(|rect| rect_contains(rect, column, row)) {
+            app.focus = Focus::Sidebar;
+            let len = app.sidebar_targets().len();
+            if len > 0 {
+                let next = app.sidebar_cursor as isize + if delta > 0 { 1 } else { -1 };
+                app.sidebar_cursor = next.clamp(0, len as isize - 1) as usize;
+            }
+            return;
+        }
+        if let Some(index) = pane_at(app, column, row) {
+            focus_pane(app, index);
+            let len = app.active_pane().view_len();
+            if len > 0 {
+                let current = app.active_pane().cursor as isize + delta;
+                app.active_pane_mut().cursor = current.clamp(0, len as isize - 1) as usize;
+                app.active_pane_mut().ensure_scroll();
+                app.request_preview();
+            }
+        }
+        return;
+    }
+
+    if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
+        return;
+    }
+
+    let tab_hit = app
+        .layout
+        .tab_hits
+        .iter()
+        .find(|(rect, _)| rect_contains(*rect, column, row))
+        .map(|(_, index)| *index);
+    if let Some(index) = tab_hit {
+        switch_tab(app, index);
+        return;
+    }
+
+    if sidebar_rect.is_some_and(|rect| rect_contains(rect, column, row)) {
+        let hit = app
+            .layout
+            .sidebar_hits
+            .iter()
+            .find(|(rect, _)| rect_contains(*rect, column, row))
+            .map(|(_, index)| *index);
+        if let Some(index) = hit {
+            app.sidebar_cursor = index;
+            app.focus = Focus::Files;
+            action::dispatch(app, Action::SidebarOpen);
+        }
+        return;
+    }
+
+    for pane in 0..2 {
+        let Some(layout) = app.layout.panes[pane].clone() else {
+            continue;
+        };
+        if !rect_contains(layout.header, column, row) {
+            continue;
+        }
+        let crumb = layout
+            .crumbs
+            .iter()
+            .find(|(rect, _)| rect_contains(*rect, column, row))
+            .map(|(_, path)| path.clone());
+        if let Some(path) = crumb {
+            focus_pane(app, pane);
+            if let Err(err) = app.navigate(path) {
+                app.set_error(err);
+            }
+            return;
+        }
+        let column_hit = layout
+            .columns
+            .iter()
+            .find(|(rect, _)| rect_contains(*rect, column, row))
+            .map(|(_, sort_column)| *sort_column);
+        if let Some(sort_column) = column_hit {
+            focus_pane(app, pane);
+            let key = match sort_column {
+                Column::Name => crate::filesystem::SortKey::Name,
+                Column::Size => crate::filesystem::SortKey::Size,
+                Column::Modified => crate::filesystem::SortKey::Modified,
+            };
+            if app.active_pane().sort == key {
+                action::dispatch(app, Action::SortOrder);
+            } else {
+                let fuzzy = app.fuzzy();
+                let active = app.active_pane_mut();
+                active.sort = key;
+                active.rebuild(fuzzy);
+            }
+            return;
+        }
+        return;
+    }
+
+    if let Some(index) = pane_at(app, column, row) {
+        let Some(list_rect) = app.layout.panes[index].as_ref().map(|layout| layout.list) else {
+            return;
+        };
+        if !rect_contains(list_rect, column, row) {
+            return;
+        }
+        focus_pane(app, index);
+        let row_in_list = (row - list_rect.y) as usize;
+        let target = app.active_pane().scroll + row_in_list;
+        if target < app.active_pane().view_len() {
+            let double = app.last_click.is_some_and(|(at, last_col, last_row)| {
+                last_col == column
+                    && last_row == row
+                    && (at.elapsed().as_millis() as u64) < app.config.behavior.double_click_ms
+            });
+            app.last_click = Some((std::time::Instant::now(), column, row));
+            app.active_pane_mut().cursor = target;
+            app.active_pane_mut().ensure_scroll();
+            app.request_preview();
+            if double {
+                let _ = action::dispatch(app, Action::Open);
+            }
+        }
+        return;
+    }
+
+    if preview_rect.is_some_and(|rect| rect_contains(rect, column, row)) {
+        app.focus = Focus::Preview;
+    }
+}
+
+fn pane_at(app: &App, column: u16, row: u16) -> Option<usize> {
+    for index in 0..2 {
+        if let Some(layout) = &app.layout.panes[index] {
+            if rect_contains(layout.list, column, row) || rect_contains(layout.header, column, row)
+            {
+                return Some(index);
+            }
+        }
+    }
+    None
+}
+
+fn focus_pane(app: &mut App, index: usize) {
+    if app.dual {
+        app.active_tab_mut().focus_right = index == 1;
+    }
+    app.focus = Focus::Files;
+}
+
+fn rect_contains(rect: ratatui::layout::Rect, column: u16, row: u16) -> bool {
+    column >= rect.x
+        && column < rect.x.saturating_add(rect.width)
+        && row >= rect.y
+        && row < rect.y.saturating_add(rect.height)
 }
