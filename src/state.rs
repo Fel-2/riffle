@@ -615,6 +615,25 @@ pub struct SidebarMsg {
     pub targets: Vec<(String, PathBuf)>,
 }
 
+pub struct UpdateMsg {
+    pub manual: bool,
+    pub result: Result<String, String>,
+}
+
+pub struct UpdateState {
+    pub latest: Option<String>,
+    pub checking: bool,
+}
+
+impl UpdateState {
+    pub fn new() -> Self {
+        Self {
+            latest: None,
+            checking: false,
+        }
+    }
+}
+
 pub struct Pane {
     pub dir: PathBuf,
     pub entries: Vec<FileEntry>,
@@ -829,6 +848,9 @@ pub struct App {
     pub image: ImageState,
     pub image_tx: Sender<ImageRequest>,
     pub image_rx: Receiver<ImageMsg>,
+    pub update: UpdateState,
+    pub update_tx: Sender<UpdateMsg>,
+    pub update_rx: Receiver<UpdateMsg>,
     pub dir_gen: u64,
     pub preview_gen: u64,
     pub dir_tx: Sender<DirMsg>,
@@ -886,6 +908,7 @@ impl App {
         crate::ui::image::spawn_worker(image_req_rx, image_res_tx);
         let (sidebar_tx, sidebar_rx) = std::sync::mpsc::channel();
         spawn_sidebar_scan(sidebar_tx.clone(), 1, bookmarks.clone());
+        let (update_tx, update_rx) = std::sync::mpsc::channel();
 
         let mut app = Self {
             tabs: vec![tab],
@@ -921,6 +944,9 @@ impl App {
             image: ImageState::new(),
             image_tx,
             image_rx,
+            update: UpdateState::new(),
+            update_tx,
+            update_rx,
             dir_gen: 0,
             preview_gen: 0,
             dir_tx,
@@ -1027,6 +1053,62 @@ impl App {
         if let Some(status) = &self.status {
             if status.at.elapsed() >= status.ttl {
                 self.status = None;
+            }
+        }
+    }
+
+    pub fn maybe_check_updates(&mut self) {
+        if !self.config.behavior.update_check {
+            return;
+        }
+        if let Some((latest, timestamp)) = crate::update::read_cache() {
+            if crate::update::latest_newer(env!("CARGO_PKG_VERSION"), &latest) {
+                self.update.latest = Some(latest);
+            }
+            if crate::update::cache_is_fresh(timestamp) {
+                return;
+            }
+        }
+        self.start_update_check(false);
+    }
+
+    pub fn check_updates(&mut self) {
+        self.start_update_check(true);
+    }
+
+    fn start_update_check(&mut self, manual: bool) {
+        if self.update.checking {
+            if manual {
+                self.set_info("Already checking for updates");
+            }
+            return;
+        }
+        self.update.checking = true;
+        if manual {
+            self.set_info("Checking for updates…");
+        }
+        crate::update::spawn_check(self.update_tx.clone(), manual);
+    }
+
+    pub fn apply_update(&mut self, msg: UpdateMsg) {
+        self.update.checking = false;
+        match msg.result {
+            Ok(latest) => {
+                crate::update::write_cache(&latest);
+                if crate::update::latest_newer(env!("CARGO_PKG_VERSION"), &latest) {
+                    self.update.latest = Some(latest.clone());
+                    self.set_warn(format!("Update available: {latest}"));
+                } else {
+                    self.update.latest = None;
+                    if msg.manual {
+                        self.set_success(format!("Up to date (v{})", env!("CARGO_PKG_VERSION")));
+                    }
+                }
+            }
+            Err(err) => {
+                if msg.manual {
+                    self.set_error(format!("Update check failed: {err}"));
+                }
             }
         }
     }
@@ -1531,7 +1613,10 @@ impl App {
         self.image.reset();
         match loaded.error {
             Some(err) => self.set_error(err),
-            None => self.set_success("Config reloaded"),
+            None => {
+                self.set_success("Config reloaded");
+                self.maybe_check_updates();
+            }
         }
     }
 

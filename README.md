@@ -33,6 +33,8 @@ A fast, good-looking terminal file manager written in Rust with
   sort, click breadcrumbs/tabs/sidebar, scroll with the wheel.
 - **Shell integration** — `riffle -p` prints the final directory so a shell
   function can `cd` there on exit.
+- **Update check** — optionally checks GitHub once a day for a newer release and
+  shows it in the status bar. Disable with `update_check = false`.
 
 ## Requirements
 
@@ -44,6 +46,25 @@ A fast, good-looking terminal file manager written in Rust with
   corresponding features.
 
 ## Installation
+
+### Quick install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Fel-2/riffle/main/install.sh | sh
+```
+
+This installs the latest release into `~/.local/bin`. Make sure that directory
+is on your `PATH`. To pin a version or install system-wide:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Fel-2/riffle/main/install.sh | VERSION=v0.2.1 sh
+curl -fsSL https://raw.githubusercontent.com/Fel-2/riffle/main/install.sh | sudo PREFIX=/usr/local sh
+```
+
+The installer downloads the static musl build on x86_64 and the glibc build on
+aarch64, and verifies the release checksum.
+
+### From source
 
 ```bash
 git clone https://github.com/Fel-2/riffle
@@ -214,6 +235,8 @@ print_cwd = false
 shell = ""                # empty = $SHELL
 confirm_trash = false
 double_click_ms = 400
+# Check GitHub for a newer release at most once a day.
+update_check = true
 
 [theme]
 preset = "tokyo-night"    # tokyo-night, catppuccin, gruvbox, nord, dracula, one-dark, light

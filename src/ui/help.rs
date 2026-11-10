@@ -89,7 +89,7 @@ pub fn render(f: &mut Frame, app: &mut App, theme: &Theme) {
     };
     f.render_widget(Clear, popup);
     let block = Block::default()
-        .title(" Keys ")
+        .title(format!(" Keys — riffle v{} ", env!("CARGO_PKG_VERSION")))
         .title_style(
             Style::default()
                 .fg(theme.accent)

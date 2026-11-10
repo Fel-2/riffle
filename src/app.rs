@@ -73,6 +73,9 @@ fn drain(app: &mut App) {
     while let Ok(message) = app.sidebar_rx.try_recv() {
         app.apply_sidebar_targets(message);
     }
+    while let Ok(message) = app.update_rx.try_recv() {
+        app.apply_update(message);
+    }
     drain_task(app);
 }
 

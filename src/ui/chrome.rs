@@ -214,6 +214,21 @@ fn right_status(app: &App, theme: &Theme) -> (String, Style) {
                 .add_modifier(Modifier::BOLD),
         );
     }
+    if app.mode == Mode::Normal && app.focus == Focus::Files && !app.dual {
+        if let Some(latest) = &app.update.latest {
+            return (
+                format!(" ↑ {latest} available "),
+                Style::default()
+                    .fg(theme.yellow)
+                    .bg(theme.panel)
+                    .add_modifier(Modifier::BOLD),
+            );
+        }
+        return (
+            format!(" v{} ", env!("CARGO_PKG_VERSION")),
+            Style::default().fg(theme.dim).bg(theme.panel),
+        );
+    }
     let label = match app.mode {
         Mode::Normal => match app.focus {
             Focus::Files => {

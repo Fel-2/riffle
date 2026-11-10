@@ -72,6 +72,7 @@ pub struct Behavior {
     pub shell: String,
     pub confirm_trash: bool,
     pub double_click_ms: u64,
+    pub update_check: bool,
 }
 
 impl Default for Behavior {
@@ -82,6 +83,7 @@ impl Default for Behavior {
             shell: String::new(),
             confirm_trash: false,
             double_click_ms: 400,
+            update_check: true,
         }
     }
 }
@@ -304,6 +306,9 @@ shell = ""
 confirm_trash = false
 
 double_click_ms = 400
+
+# Check GitHub for a newer release at most once a day. Set to false to disable.
+update_check = true
 
 [theme]
 # Presets: tokyo-night, catppuccin, gruvbox, nord, dracula, one-dark, light.

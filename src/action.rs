@@ -68,6 +68,7 @@ pub enum Action {
     RemoveBookmark,
     Undo,
     ReloadConfig,
+    CheckUpdates,
     Help,
     Palette,
     Quit,
@@ -143,6 +144,7 @@ impl Action {
             Action::RemoveBookmark,
             Action::Undo,
             Action::ReloadConfig,
+            Action::CheckUpdates,
             Action::Help,
             Action::Palette,
             Action::Parent,
@@ -212,6 +214,7 @@ impl Action {
             Action::RemoveBookmark => "Remove bookmark for current directory",
             Action::Undo => "Undo last trash",
             Action::ReloadConfig => "Reload configuration",
+            Action::CheckUpdates => "Check for updates",
             Action::Help => "Show keybindings",
             Action::Palette => "Command palette",
             Action::Quit => "Quit",
@@ -298,7 +301,11 @@ impl Action {
             | Action::CloseTab
             | Action::NextTab
             | Action::PrevTab => "Layout",
-            Action::ReloadConfig | Action::Help | Action::Palette | Action::Quit => "App",
+            Action::ReloadConfig
+            | Action::CheckUpdates
+            | Action::Help
+            | Action::Palette
+            | Action::Quit => "App",
         }
     }
 
@@ -357,6 +364,7 @@ impl Action {
             Action::RemoveBookmark => "",
             Action::Undo => "ctrl+z",
             Action::ReloadConfig => "",
+            Action::CheckUpdates => "",
             Action::Help => "? F1",
             Action::Palette => "ctrl+p",
             Action::Quit => "q",
@@ -475,6 +483,7 @@ pub fn dispatch(app: &mut App, action: Action) -> Effect {
         }
         Action::Undo => app.undo_trash(),
         Action::ReloadConfig => app.reload_config(),
+        Action::CheckUpdates => app.check_updates(),
         Action::Help => {
             app.help = Some(HelpState { scroll: 0 });
             app.mode = Mode::Help;

@@ -13,6 +13,7 @@ mod syntax;
 mod terminal;
 mod theme;
 mod ui;
+mod update;
 mod utils;
 
 use crate::state::App;
@@ -39,8 +40,12 @@ fn main() -> ExitCode {
     let config_error = loaded.error.clone();
     let print_cwd = options.print_cwd || loaded.config.behavior.print_cwd;
     let mut app = App::new(loaded.config, options.start, print_cwd, options.select);
+    let config_failed = config_error.is_some();
     if let Some(err) = config_error {
         app.show_config_error(&err);
+    }
+    if !config_failed {
+        app.maybe_check_updates();
     }
     app.update_title();
 
